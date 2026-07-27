@@ -45,6 +45,9 @@ all = [
     "google-genai>=1.0.0",
     "mistralai>=1.0.0",
 ]
+redis = [
+    "redis>=5.0.0",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.23.0",
@@ -55,6 +58,8 @@ dev = [
     "ollama>=0.3.0",
     "google-genai>=1.0.0",
     "mistralai>=1.0.0",
+    "redis>=5.0.0",
+    "fakeredis[lua]>=2.20.0",
 ]
 
 [project.scripts]

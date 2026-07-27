@@ -9,9 +9,10 @@ from typing import Any
 import yaml
 
 from .audit import AuditLog
+from .classifier import InjectionClassificationError, InjectionClassifier
 from .memory import MemoryManager
 from .providers import LLMProvider, ProviderError, build_provider_from_env
-from .ratelimit import RateLimiter, RateLimitExceededError
+from .ratelimit import RateLimiter, RateLimiterBackend, RateLimitExceededError
 from .schema import BromptConfig, ExecutionResult
 from .security import SecurityEngine, SecurityViolationError
 
@@ -27,6 +28,8 @@ class BromptEngine:
         provider: LLMProvider | None = None,
         async_provider: LLMProvider | None = None,
         audit_log_path: str | None = None,
+        rate_limiter: RateLimiterBackend | None = None,
+        injection_classifier: InjectionClassifier | None = None,
     ):
         manifest_file = Path(config_path)
         if not manifest_file.exists():
@@ -50,12 +53,21 @@ class BromptEngine:
         self.memory = MemoryManager(
             max_turns=self.config.memory_strategy.max_history_turns
         )
-        self.rate_limiter = RateLimiter(
+        # Explicit rate_limiter (e.g. RedisRateLimiter for multi-instance
+        # deployments) takes precedence; otherwise fall back to the
+        # in-process, single-instance limiter built from the manifest.
+        self.rate_limiter: RateLimiterBackend = rate_limiter or RateLimiter(
             max_requests=rate_policy.get("max_requests", 30),
             window_seconds=rate_policy.get("window_seconds", 60.0),
         )
+        # Explicit provider > env-configured provider > None (dry-run mode).
         self.provider: LLMProvider | None = provider if provider is not None else build_provider_from_env()
+        # Separate slot for an async-capable provider (execute_async).
         self.async_provider: LLMProvider | None = async_provider
+        # Optional semantic second pass beyond the regex blocklist. Off by
+        # default (extra latency/cost per request) -- pass e.g.
+        # LLMInjectionClassifier(some_provider) to enable it.
+        self.injection_classifier: InjectionClassifier | None = injection_classifier
         self.audit = AuditLog(
             audit_log_path or str(manifest_file.parent / f"{manifest_file.stem}.audit.log")
         )
@@ -66,11 +78,25 @@ class BromptEngine:
     def _pre_process(
         self, user_query: str, context: dict[str, Any] | None, caller_id: str
     ) -> tuple[str, dict[str, Any]]:
-        """Rate limit, sanitize, update state, and record the user turn."""
+        """Rate limit, sanitize, classify, update state, and record the user turn."""
         self.rate_limiter.check(caller_id)
 
         max_kb = self.config.security_policy.max_payload_size_kb
         clean_query = SecurityEngine.sanitize(user_query, max_payload_size_kb=max_kb)
+
+        # Second, semantic pass: catches paraphrased/obfuscated attempts the
+        # regex blocklist misses. Fails *open* on classifier errors -- the
+        # regex layer still applies either way.
+        if self.injection_classifier is not None:
+            try:
+                blocked = self.injection_classifier.is_blocked(clean_query)
+            except InjectionClassificationError as exc:
+                logger.warning("Injection classifier unavailable, failing open: %s", exc)
+                blocked = None
+            if blocked is not None:
+                raise SecurityViolationError(
+                    f"Security Violation: [Semantic Injection: {blocked.reasoning}]"
+                )
 
         if context:
             for k, v in context.items():
