@@ -16,18 +16,6 @@
 
 # 🛡️ Brompt Engine
 
-**Repository:** [https://github.com/sh0-dax/Brompt.git](https://github.com/sh0-dax/Brompt.git)
-
-**Project Name:** Brompt Engine
-
-**Classification:** Zero-Trust AI Execution Runtime & State Engine
-
-**Target Release:** `v0.1.0-alpha`
-
-**Author:** SH ÂZZOUZ
-
----
-
 ## 1. System Architecture Overview
 
 The **Brompt Engine** addresses the fundamental limitations of modern LLM agents: non-deterministic execution paths and linear context drift (`O(N)` token growth). It acts as an execution middleware positioning itself between host application environments and upstream model endpoints.
