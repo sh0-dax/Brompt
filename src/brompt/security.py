@@ -2,29 +2,42 @@
 
 import re
 import logging
-from typing import List
+from typing import List, Tuple
 
 logger = logging.getLogger("brompt.security")
 
 
+class SecurityViolationError(ValueError):
+    """Custom exception raised when a security inspection fails."""
+    pass
+
+
 class SecurityEngine:
-    BLOCKED_PATTERNS: List[str] = [
-        r"\bignore\s+previous\s+instructions\b",
-        r"\bsystem\s+prompt\s+override\b",
-        r"\bbypass\s+guardrails?\b",
-        r"\breveal\s+internal\s+keys\b",
+    INJECTION_PATTERNS: List[Tuple[str, str]] = [
+        # Direct Injection
+        (r"\bignore\s+(all\s+)?previous\s+instructions\b", "Direct Injection: Instruction Override"),
+        (r"\bsystem\s+prompt\s+override\b", "Direct Injection: System Override"),
+        (r"\bbypass\s+guardrails?\b", "Guardrail Bypass Attempt"),
+        (r"\breveal\s+(your\s+)?(system\s+)?prompt\b", "System Leakage Attempt"),
+        (r"\breveal\s+internal\s+keys\b", "Credential Leakage Attempt"),
+        # Jailbreak
+        (r"you\s+are\s+now\s+in\s+(developer|dan|god)\s+mode", "Jailbreak: Persona Switch"),
+        # Arabic Attacks
+        (r"تجاهل\s+(جميع\s+)?التعليمات\s+السابقة", "Hijri: Instruction Override Attempt"),
+        (r"أنت\s+(الآن\s+)?في\s+وضع\s+المطور", "Hijri: Developer Mode Bypass"),
     ]
 
     @classmethod
     def sanitize(cls, text: str, max_payload_size_kb: int = 64) -> str:
-        """Sanitizes query payloads and prevents execution attacks.
+        """Sanitizes user input and enforces strict safety rules.
 
         Args:
             text: Input text to validate.
             max_payload_size_kb: Maximum allowed payload size in kilobytes.
 
         Raises:
-            ValueError: If input is empty, exceeds size limit, or matches a blocked pattern.
+            SecurityViolationError: If input matches a blocked pattern.
+            ValueError: If input is empty or exceeds size limit.
         """
         if not text or not text.strip():
             raise ValueError("Invalid Input: Payload cannot be empty.")
@@ -36,10 +49,10 @@ class SecurityEngine:
                 f"Payload violation: Size {payload_bytes} bytes exceeds limit of {max_bytes} bytes."
             )
 
-        for pattern in cls.BLOCKED_PATTERNS:
+        for pattern, reason in cls.INJECTION_PATTERNS:
             if re.search(pattern, text, re.IGNORECASE):
-                logger.warning("Security violation detected: pattern [%s]", pattern)
-                raise ValueError(
-                    f"\U0001f6e1 Security Violation: Blocked malicious pattern [{pattern}]."
+                logger.warning("Security violation: %s | pattern [%s]", reason, pattern)
+                raise SecurityViolationError(
+                    f"Security Violation: [{reason}]"
                 )
         return text.strip()

@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 import yaml
 
 from .schema import BromptConfig, ExecutionResult
-from .security import SecurityEngine
+from .security import SecurityEngine, SecurityViolationError
 from .memory import MemoryManager
 
 logger = logging.getLogger("brompt.core")
@@ -64,6 +64,14 @@ class BromptEngine:
 
             return ExecutionResult(
                 state_id=self.state_id, is_secure=True, data=output_payload
+            )
+        except SecurityViolationError as err:
+            logger.warning("Security violation blocked execution: %s", err)
+            return ExecutionResult(
+                state_id=self.state_id,
+                is_secure=False,
+                data={},
+                error_message=str(err),
             )
         except ValueError as err:
             return ExecutionResult(

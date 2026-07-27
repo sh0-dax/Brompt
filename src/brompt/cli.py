@@ -7,9 +7,11 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
 import time
+import json
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
@@ -84,10 +86,11 @@ def print_result(result):
         table.add_column("Value")
         table.add_row("State ID", result.state_id)
         table.add_row("Status", "[green]SECURE[/green]")
-        table.add_row("Engine", result.data.get("engine_status", ""))
-        table.add_row("Virtual State", result.data.get("virtual_state", ""))
-        table.add_row("Input", result.data.get("processed_input", ""))
         console.print(table)
+
+        formatted = json.dumps(result.data, indent=2, ensure_ascii=False)
+        syntax = Syntax(formatted, "json", theme="monokai", line_numbers=False)
+        console.print(Panel(syntax, title="[bold white]Output Payload[/bold white]", border_style="green"))
         console.print()
     else:
         console.print(Panel(
