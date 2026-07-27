@@ -45,7 +45,9 @@ def boot_animation():
     console.print(
         Panel.fit(
             "[bold white]Zero-Trust AI Middleware Runtime[/bold white]\n"
-            "[dim]v1.0.0-alpha | Production Environment[/dim]",
+            "[dim]Classification: Zero-Trust AI Execution Runtime & State Engine[/dim]\n"
+            "[dim]Target Release: v0.1.0-alpha[/dim]\n"
+            "[dim]Author: SH ÂZZOUZ[/dim]",
             border_style="cyan",
             padding=(0, 2),
         )
