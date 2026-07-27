@@ -14,7 +14,37 @@
 
 ---
 
-# 🛡️ Brompt Engine
+<h1 align="center" id="top">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/light.png">
+    <img src="assets/light.png" alt="Brompt Engine" width="600">
+  </picture>
+</h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/Pydantic-v2-0E67E0?style=for-the-badge&logo=pydantic&logoColor=white" alt="Pydantic v2">
+  <img src="https://img.shields.io/badge/Rich-TUI-0F0F0F?style=for-the-badge" alt="Rich TUI">
+  <img src="https://img.shields.io/badge/YAML-CB171E?style=for-the-badge&logo=yaml&logoColor=white" alt="YAML">
+  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
+</p>
+
+---
+
+<p align="center"><strong>Table of Contents</strong></p>
+<p align="center">
+  <a href="#1-system-architecture-overview">Architecture</a> ·
+  <a href="#2-repository-layout">Layout</a> ·
+  <a href="#3-configuration-manifest">Config</a> ·
+  <a href="#4-quick-start">Quick Start</a> ·
+  <a href="#5-api-reference">API</a> ·
+  <a href="#6-cicd-pipeline">CI/CD</a> ·
+  <a href="#7-production-readiness">Production</a> ·
+  <a href="#8-license">License</a>
+</p>
+
+---
 
 ## 1. System Architecture Overview
 
@@ -183,5 +213,9 @@ MIT License — see [LICENSE](LICENSE) for details.
 ---
 
 <p align="center">
-  <sub>Built by ❤️ <b>SH ÂZZOUZ</b> — sh0-dax</sub>
+  <a href="#top">⬆ Back to Top</a>
+</p>
+
+<p align="center">
+  <sub>Built by ❤️ <b>SH ÂZZOUZ</b> — <a href="https://github.com/sh0-dax" target="_blank">sh0-dax</a></sub>
 </p>
