@@ -1,5 +1,6 @@
-"""Unit tests for Virtual State Memory Engine."""
+"""Unit tests for Bounded State Memory Engine."""
 
+import threading
 from brompt.memory import MemoryManager
 
 
@@ -42,3 +43,42 @@ class TestMemoryManager:
     def test_empty_state(self):
         mm = MemoryManager()
         assert mm.get_state() == {}
+
+    def test_concurrent_updates(self):
+        mm = MemoryManager()
+
+        def writer(n):
+            for i in range(100):
+                mm.update_state(f"t{n}_{i}", i)
+
+        threads = [threading.Thread(target=writer, args=(t,)) for t in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        state = mm.get_state()
+        assert len(state) == 400
+
+    def test_concurrent_clear_and_update(self):
+        mm = MemoryManager()
+
+        def writer():
+            for i in range(50):
+                mm.update_state(f"k{i}", i)
+
+        def clearer():
+            for _ in range(5):
+                mm.clear()
+
+        threads = [
+            threading.Thread(target=writer),
+            threading.Thread(target=clearer),
+            threading.Thread(target=writer),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert isinstance(mm.get_state(), dict)

@@ -27,8 +27,8 @@ The **Brompt Engine** addresses the fundamental limitations of modern LLM agents
  ┌─────────────────────────────────────────────────────────────┐
  │                       BROMPT RUNTIME                        │
  │                                                             │
- │   1. Security Ingress Pipeline (Pattern Sanitize / AST)    │
- │   2. Virtual State Paging Engine (O(1) Memory State)       │
+│   1. Security Ingress Pipeline (Pattern Sanitize / Validate)  │
+│   2. Bounded State Management Engine (Fixed-Size Context)     │
  │   3. Schema Validator & JSON Contract Enforcement           │
  └─────────────────────────────────────────────────────────────┘
          │
@@ -40,8 +40,8 @@ The **Brompt Engine** addresses the fundamental limitations of modern LLM agents
 
 | Pillar | Description |
 |---|---|
-| **Zero-Trust Guardrails** | Deterministic regex and pattern matching prevent jailbreaks, prompt overrides, and payload leakage |
-| **Virtual State Memory** | `O(1)` bounded state dictionary replaces raw message concatenation — fixed memory regardless of session depth |
+| **Zero-Trust Guardrails** | Deterministic regex with word boundaries, payload size enforcement, and pattern matching prevent jailbreaks and payload leakage |
+| **Bounded State Management** | Thread-safe state dictionary with fixed-size context tracking — no raw message accumulation across turns |
 | **Structured Type Contracts** | Pydantic v2 schema validation guarantees typed, programmatic outputs for downstream tooling |
 
 ---
@@ -58,7 +58,7 @@ Brompt/
 │       ├── __init__.py
 │       ├── schema.py              # Data Models & System Schemas
 │       ├── security.py            # Guardrails & Ingress Filtering
-│       ├── memory.py              # Virtual State Engine (O(1) Paging)
+│       ├── memory.py              # Bounded State Manager (Thread-Safe)
 │       ├── core.py                # Main Execution Runtime Engine
 │       └── cli.py                 # Rich Terminal User Interface (TUI)
 ├── tests/
@@ -138,7 +138,7 @@ Static method. Validates input against adversarial patterns. Raises `ValueError`
 
 ### `MemoryManager(max_turns)`
 
-Virtual state engine for `O(1)` context management.
+Virtual state engine for bounded context management.
 
 | Method | Returns | Description |
 |---|---|---|

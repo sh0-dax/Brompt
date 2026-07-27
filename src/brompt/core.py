@@ -1,6 +1,7 @@
 """Core Runtime Execution Logic."""
 
 import uuid
+import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 import yaml
@@ -8,6 +9,8 @@ import yaml
 from .schema import BromptConfig, ExecutionResult
 from .security import SecurityEngine
 from .memory import MemoryManager
+
+logger = logging.getLogger("brompt.core")
 
 
 class BromptEngine:
@@ -43,7 +46,8 @@ class BromptEngine:
         """Executes query payload through security filters and updates state."""
         try:
             # 1. Sanitize payload
-            clean_query = SecurityEngine.sanitize(user_query)
+            max_kb = self.config.security_policy.max_payload_size_kb
+            clean_query = SecurityEngine.sanitize(user_query, max_payload_size_kb=max_kb)
 
             # 2. Update Virtual Memory
             if context:
@@ -61,10 +65,18 @@ class BromptEngine:
             return ExecutionResult(
                 state_id=self.state_id, is_secure=True, data=output_payload
             )
-        except Exception as err:
+        except ValueError as err:
             return ExecutionResult(
                 state_id=self.state_id,
                 is_secure=False,
                 data={},
                 error_message=str(err),
+            )
+        except Exception as err:
+            logger.error("Unexpected engine error: %s", err, exc_info=True)
+            return ExecutionResult(
+                state_id=self.state_id,
+                is_secure=False,
+                data={},
+                error_message=f"Internal engine error: {type(err).__name__}",
             )
