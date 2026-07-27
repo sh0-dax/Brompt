@@ -18,6 +18,8 @@ from .security import SecurityEngine, SecurityViolationError
 
 logger = logging.getLogger("brompt.core")
 
+_UNSET = object()
+
 
 class BromptEngine:
     """Core runtime engine enforcing deterministic execution and security guardrails."""
@@ -25,7 +27,7 @@ class BromptEngine:
     def __init__(
         self,
         config_path: str = "agent.brompt.yaml",
-        provider: LLMProvider | None = None,
+        provider: LLMProvider | None | object = _UNSET,
         async_provider: LLMProvider | None = None,
         audit_log_path: str | None = None,
         rate_limiter: RateLimiterBackend | None = None,
@@ -61,7 +63,10 @@ class BromptEngine:
             window_seconds=rate_policy.get("window_seconds", 60.0),
         )
         # Explicit provider > env-configured provider > None (dry-run mode).
-        self.provider: LLMProvider | None = provider if provider is not None else build_provider_from_env()
+        if provider is _UNSET:
+            self.provider: LLMProvider | None = build_provider_from_env()
+        else:
+            self.provider: LLMProvider | None = provider
         # Separate slot for an async-capable provider (execute_async).
         self.async_provider: LLMProvider | None = async_provider
         # Optional semantic second pass beyond the regex blocklist. Off by

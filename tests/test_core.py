@@ -44,7 +44,7 @@ class TestBromptEngine:
             )
         config_file = tmp_path / "agent.brompt.yaml"
         config_file.write_text(config_text, encoding="utf-8")
-        return BromptEngine(str(config_file))
+        return BromptEngine(str(config_file), provider=None, async_provider=None)
 
     def _write_config(self, tmp_path):
         config_text = (
