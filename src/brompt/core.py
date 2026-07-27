@@ -42,12 +42,15 @@ class BromptEngine:
     ) -> ExecutionResult:
         """Executes query payload through security filters and updates state."""
         try:
+            # 1. Sanitize payload
             clean_query = SecurityEngine.sanitize(user_query)
 
+            # 2. Update Virtual Memory
             if context:
                 for k, v in context.items():
                     self.memory.update_state(k, v)
 
+            # 3. Formulate Output State
             output_payload = {
                 "processed_input": clean_query,
                 "engine_status": "ACTIVE",
