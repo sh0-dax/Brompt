@@ -1,6 +1,7 @@
 """Data schemas and type contracts for Brompt Engine."""
 
-from typing import Any, Dict, Optional
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -26,5 +27,5 @@ class BromptConfig(BaseModel):
 class ExecutionResult(BaseModel):
     state_id: str
     is_secure: bool
-    data: Dict[str, Any]
-    error_message: Optional[str] = None
+    data: dict[str, Any]
+    error_message: str | None = None

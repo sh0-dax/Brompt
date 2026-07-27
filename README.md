@@ -30,6 +30,16 @@
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
 </p>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Anthropic-Supported-D4A373?style=for-the-badge&logo=anthropic&logoColor=white" alt="Anthropic">
+  <img src="https://img.shields.io/badge/OpenAI-Supported-412991?style=for-the-badge&logo=openai&logoColor=white" alt="OpenAI">
+  <img src="https://img.shields.io/badge/Ollama-Supported-FFFFFF?style=for-the-badge&logo=ollama&logoColor=black" alt="Ollama">
+  <img src="https://img.shields.io/badge/Gemini-Supported-4285F4?style=for-the-badge&logo=google&logoColor=white" alt="Gemini">
+  <img src="https://img.shields.io/badge/Mistral-Supported-FF7000?style=for-the-badge&logo=mistral&logoColor=white" alt="Mistral">
+  <img src="https://img.shields.io/badge/Azure_OpenAI-Supported-0078D4?style=for-the-badge&logo=microsoftazure&logoColor=white" alt="Azure OpenAI">
+  <img src="https://img.shields.io/badge/LM_Studio-Supported-FF6B35?style=for-the-badge&logo=hardware&logoColor=white" alt="LM Studio">
+</p>
+
 ---
 
 <p align="center"><strong>Table of Contents</strong></p>
@@ -38,10 +48,11 @@
   <a href="#2-repository-layout">Layout</a> ·
   <a href="#3-configuration-manifest">Config</a> ·
   <a href="#4-quick-start">Quick Start</a> ·
-  <a href="#5-api-reference">API</a> ·
-  <a href="#6-cicd-pipeline">CI/CD</a> ·
-  <a href="#7-production-readiness">Production</a> ·
-  <a href="#8-license">License</a>
+  <a href="#5-providers">Providers</a> ·
+  <a href="#6-api-reference">API</a> ·
+  <a href="#7-cicd-pipeline">CI/CD</a> ·
+  <a href="#8-production-readiness">Production</a> ·
+  <a href="#9-license">License</a>
 </p>
 
 ---
@@ -59,23 +70,37 @@ The **Brompt Engine** addresses the fundamental limitations of modern LLM agents
  ┌─────────────────────────────────────────────────────────────┐
  │                       BROMPT RUNTIME                        │
  │                                                             │
- │   1. Security Ingress Pipeline (Pattern Sanitize / Validate)│
- │   2. Bounded State Management Engine (Fixed-Size Context)   │
- │   3. Schema Validator & JSON Contract Enforcement           │
+ │   1. Rate Limiter (per-caller sliding window)                │
+ │   2. Security Ingress Pipeline (Pattern Sanitize / Validate)│
+ │   3. Bounded Turn History (deque, evicts past max_turns)    │
+ │   4. Schema Validator & JSON Contract Enforcement           │
+ │   5. Upstream Provider Call (pluggable; 6 providers)        │
+ │   6. Output Sanitizer (redacts leaked secret-like strings)  │
+ │   7. Hash-Chained Audit Log (tamper-evident, append-only)   │
  └─────────────────────────────────────────────────────────────┘
          │
          ▼
-[ Upstream LLM Provider ]
+[ Upstream LLM Provider ] (optional — omitted entirely if unconfigured,
+                            engine runs in dry-run / validation-only mode)
 ```
+
+**Note on the pattern-matching security layer:** `SecurityEngine.sanitize`
+is a regex blocklist. It catches unsophisticated, literal injection
+attempts (including Arabic-language variants) but is not a robust defense
+against paraphrased, encoded, or otherwise obfuscated prompt injection —
+no blocklist is. Treat it as a cheap first filter, not a guarantee, and
+pair it with the output sanitizer and least-privilege tool/permission
+design on the application side.
 
 ### Core Architecture Pillars:
 
 | Pillar | Description |
 |---|---|
-| **Defense in Depth Security** | Multi-layered protection with input sanitization, pattern matching, payload size limits, and planned rate limiting & audit logging |
-| **Bounded State Management** | Thread-safe state dictionary with fixed-size context tracking — no raw message accumulation across turns |
+| **Defense in Depth Security** | Multi-layered protection: input sanitization, output redaction, payload size limits, rate limiting, and hash-chained audit logging |
+| **Bounded State Management** | Thread-safe `deque(maxlen=max_turns)` turn history — no raw message accumulation across turns |
 | **Structured Type Contracts** | Pydantic v2 schema validation guarantees typed, programmatic outputs for downstream tooling |
-| **Modern Type Safety** | Updated Python 3.10+ type annotations for better IDE support and static analysis |
+| **Modern Type Safety** | Python 3.10+ `dict`, `list`, `str \| None` annotations for better IDE support and static analysis |
+| **Pluggable Provider System** | 6 LLM providers: Anthropic, OpenAI, Ollama, Gemini, Mistral, Azure OpenAI, LM Studio — sync + async |
 
 ---
 
@@ -86,18 +111,27 @@ Brompt/
 ├── .github/
 │   └── workflows/
 │       └── ci.yml                 # GitHub Actions CI/CD Pipeline
+├── assets/
+│   ├── dark.png                   # Dark mode banner
+│   └── light.png                  # Light mode banner
 ├── src/
 │   └── brompt/
 │       ├── __init__.py
 │       ├── schema.py              # Data Models & System Schemas
-│       ├── security.py            # Guardrails & Ingress Filtering
-│       ├── memory.py              # Bounded State Manager (Thread-Safe)
+│       ├── security.py            # Ingress filtering + output redaction
+│       ├── memory.py              # Bounded turn history + session state (Thread-Safe)
+│       ├── providers.py           # Pluggable upstream LLM providers (6 providers)
+│       ├── ratelimit.py           # Per-caller sliding-window rate limiter
+│       ├── audit.py               # Hash-chained, tamper-evident audit log
 │       ├── core.py                # Main Execution Runtime Engine
 │       └── cli.py                 # Rich Terminal User Interface (TUI)
 ├── tests/
 │   ├── test_core.py               # Core Runtime Unit Tests
 │   ├── test_security.py           # Security Filter Unit Tests
-│   └── test_memory.py             # Memory Engine Unit Tests
+│   ├── test_memory.py             # Memory Engine Unit Tests
+│   ├── test_providers.py          # Provider Abstraction Unit Tests
+│   ├── test_ratelimit.py          # Rate Limiter Unit Tests
+│   └── test_audit.py              # Audit Log Unit Tests
 ├── agent.brompt.yaml              # Declarative Runtime Manifest
 ├── pyproject.toml                 # Package Configuration & Dependencies
 └── README.md                      # Technical Specification
@@ -124,6 +158,10 @@ memory_strategy:
   paging_mode: "VIRTUAL_STATE_O1"
   max_history_turns: 3
 
+rate_limit:
+  max_requests: 30
+  window_seconds: 60
+
 schema_validation:
   strict_mode: true
 ```
@@ -140,7 +178,16 @@ cd Brompt
 # Install
 python -m venv venv
 source venv/bin/activate
-pip install -e ".[dev]"
+
+# Install with a specific provider (pick one)
+pip install -e ".[anthropic]"     # Anthropic / Claude
+pip install -e ".[openai]"        # OpenAI / ChatGPT / GPT-4o
+pip install -e ".[ollama]"        # Ollama (local)
+pip install -e ".[gemini]"        # Google Gemini
+pip install -e ".[mistral]"       # Mistral
+pip install -e ".[azure]"         # Azure OpenAI
+pip install -e ".[lmstudio]"      # LM Studio (local)
+pip install -e ".[all]"           # All providers
 
 # Run tests
 pytest -v
@@ -151,37 +198,123 @@ brompt
 
 ---
 
-## 5. API Reference
+## 5. Providers
 
-### `BromptEngine(config_path)`
+Brompt supports **6 LLM providers** via a pluggable provider system. Each is an optional dependency — install only what you need.
+
+### Provider Matrix
+
+| Provider | Package | Env Variable(s) | Default Model | Type |
+|---|---|---|---|---|
+| **Anthropic** | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5` | Cloud |
+| **OpenAI** | `openai` | `OPENAI_API_KEY` | `gpt-4o` | Cloud |
+| **Ollama** | `ollama` | `OLLAMA_HOST` | `llama3.2` | Local |
+| **Gemini** | `google-genai` | `GEMINI_API_KEY` | `gemini-2.5-flash` | Cloud |
+| **Mistral** | `mistralai` | `MISTRAL_API_KEY` | `mistral-large-latest` | Cloud |
+| **Azure OpenAI** | `openai` | `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT` | — | Cloud |
+| **LM Studio** | `openai` | `LM_STUDIO_HOST` | `default` | Local |
+
+### Environment Variables
+
+```bash
+# Cloud providers
+export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...
+export GEMINI_API_KEY=...
+export MISTRAL_API_KEY=...
+export AZURE_OPENAI_API_KEY=...
+export AZURE_OPENAI_ENDPOINT=https://myinstance.openai.azure.com
+export AZURE_OPENAI_DEPLOYMENT=gpt-4o-deployment
+
+# Local providers
+export OLLAMA_HOST=http://localhost:11434         # default
+export LM_STUDIO_HOST=http://localhost:1234/v1     # default
+```
+
+### Auto-Detection
+
+When no provider is explicitly injected, `build_provider_from_env()` checks environment variables in this priority order:
+
+1. `ANTHROPIC_API_KEY` → Anthropic
+2. `OPENAI_API_KEY` → OpenAI
+3. `GEMINI_API_KEY` → Gemini
+4. `MISTRAL_API_KEY` → Mistral
+5. `AZURE_OPENAI_API_KEY` → Azure OpenAI
+6. `OLLAMA_HOST` → Ollama
+7. `LM_STUDIO_HOST` → LM Studio
+
+If none are set, the engine runs in **dry-run / validation-only mode** — input is sanitized, state is managed, but no LLM is called.
+
+---
+
+## 6. API Reference
+
+### `BromptEngine(config_path, provider=None, async_provider=None)`
 
 Core runtime entry point. Loads YAML manifest and initializes all subsystems.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `config_path` | `str` | `"agent.brompt.yaml"` | Path to runtime manifest |
+| `provider` | `LLMProvider \| None` | `None` | Sync provider (auto-detected from env if `None`) |
+| `async_provider` | `LLMProvider \| None` | `None` | Async provider for `execute_async()` |
+| `audit_log_path` | `str \| None` | `None` | Custom audit log path |
 
 **Methods:**
 
-- `execute(user_query, context=None) → ExecutionResult` — Processes a query through the full guardrail pipeline.
+- `execute(user_query, context=None, caller_id="default", system_prompt=None) → ExecutionResult` — Synchronous pipeline.
+- `execute_async(user_query, context=None, caller_id="default", system_prompt=None) → ExecutionResult` — Same pipeline, awaitable.
+
+### `LLMProvider` (ABC)
+
+Base class for all providers. Implement `generate()` for sync, optionally `agenerate()` for async.
+
+| Method | Returns | Description |
+|---|---|---|
+| `generate(messages, system=None)` | `str` | Call the LLM with bounded turn history |
+| `agenerate(messages, system=None)` | `str` | Async counterpart (optional) |
 
 ### `SecurityEngine.sanitize(text)`
 
-Static method. Validates input against adversarial patterns. Raises `SecurityViolationError` or `ValueError` on violation.
+Validates input against adversarial patterns. Raises `SecurityViolationError` or `ValueError` on violation.
+
+### `SecurityEngine.sanitize_output(text)`
+
+Redacts secret-like content (API keys, tokens) from model output.
 
 ### `MemoryManager(max_turns)`
 
-Bounded state manager for fixed-size context tracking.
+Thread-safe bounded state manager.
 
 | Method | Returns | Description |
 |---|---|---|
 | `update_state(key, value)` | `None` | Thread-safe state update |
-| `get_state()` | `Dict[str, Any]` | Returns a snapshot copy of the current state |
-| `clear()` | `None` | Thread-safe state flush |
+| `get_state()` | `dict[str, Any]` | Snapshot copy of the current state |
+| `add_turn(role, content)` | `None` | Append a conversation turn |
+| `get_history()` | `list[dict[str, str]]` | Bounded turn history |
+| `clear()` | `None` | Thread-safe state + history flush |
+
+### `RateLimiter(max_requests, window_seconds)`
+
+Per-caller sliding-window rate limiter.
+
+| Method | Raises | Description |
+|---|---|---|
+| `check(identifier)` | `RateLimitExceededError` | Register a hit; raises if budget exhausted |
+
+### `AuditLog(path)`
+
+SHA-256 hash-chained, append-only audit log.
+
+| Method | Returns | Description |
+|---|---|---|
+| `record(event, state_id, is_secure, detail=None)` | `dict` | Append a tamper-evident record |
+| `verify()` | `bool` | Replay chain; `False` if tampered |
+| `read_all()` | `list[dict]` | Read all entries |
 
 ---
 
-## 6. CI/CD Pipeline
+## 7. CI/CD Pipeline
 
 GitHub Actions runs tests on every push/PR across Python 3.10–3.13:
 
@@ -192,21 +325,24 @@ matrix:
 
 ---
 
-## 7. Production Readiness
+## 8. Production Readiness
 
 **Current Status: Alpha** — This engine is in active development and requires the following before production deployment:
 
-- ✅ Security guardrails with input sanitization
-- ✅ Bounded memory management
+- ✅ Security guardrails with input sanitization (regex blocklist — treat as a first filter, not a guarantee)
+- ✅ Bounded turn history (`deque(maxlen=max_turns)`)
 - ✅ Schema validation
-- ⚠️ **Pending:** Rate limiting implementation
-- ⚠️ **Pending:** Security audit logging
-- ⚠️ **Pending:** Output sanitization layer
-- ⚠️ **Pending:** Async/await support for high concurrency
+- ✅ Rate limiting (in-process sliding window; not distributed — multi-instance needs Redis)
+- ✅ Security audit logging (SHA-256 hash-chained, append-only, tamper-evident via `AuditLog.verify()`)
+- ✅ Output sanitization layer (redacts secret-like strings before they reach the caller)
+- ✅ 6 LLM providers (Anthropic, OpenAI, Ollama, Gemini, Mistral, Azure OpenAI, LM Studio)
+- ✅ Async execution path (`execute_async` with thread offloading for sync providers)
+- ⚠️ **Pending:** Distributed rate limiting for multi-instance deployments
+- ⚠️ **Pending:** Injection detection beyond regex (lightweight classifier for paraphrased attacks)
 
 ---
 
-## 8. License
+## 9. License
 
 MIT License — see [LICENSE](LICENSE) for details.
 

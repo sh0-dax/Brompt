@@ -1,6 +1,9 @@
 """Unit tests for Bounded State Memory Engine."""
 
 import threading
+
+import pytest
+
 from brompt.memory import MemoryManager
 
 
@@ -59,6 +62,31 @@ class TestMemoryManager:
 
         state = mm.get_state()
         assert len(state) == 400
+
+    def test_history_bounded_by_max_turns(self):
+        mm = MemoryManager(max_turns=3)
+        for i in range(10):
+            mm.add_turn("user", f"msg{i}")
+        history = mm.get_history()
+        assert len(history) == 3
+        assert [t["content"] for t in history] == ["msg7", "msg8", "msg9"]
+
+    def test_history_independent_of_state(self):
+        mm = MemoryManager(max_turns=2)
+        mm.update_state("k", "v")
+        mm.add_turn("user", "hi")
+        assert mm.get_state() == {"k": "v"}
+        assert len(mm.get_history()) == 1
+
+    def test_clear_also_clears_history(self):
+        mm = MemoryManager(max_turns=5)
+        mm.add_turn("user", "hi")
+        mm.clear()
+        assert mm.get_history() == []
+
+    def test_invalid_max_turns_rejected(self):
+        with pytest.raises(ValueError):
+            MemoryManager(max_turns=0)
 
     def test_concurrent_clear_and_update(self):
         mm = MemoryManager()

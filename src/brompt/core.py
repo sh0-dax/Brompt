@@ -1,14 +1,19 @@
 """Core Runtime Execution Logic."""
 
-import uuid
+import asyncio
 import logging
+import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
+
 import yaml
 
+from .audit import AuditLog
+from .memory import MemoryManager
+from .providers import LLMProvider, ProviderError, build_provider_from_env
+from .ratelimit import RateLimiter, RateLimitExceededError
 from .schema import BromptConfig, ExecutionResult
 from .security import SecurityEngine, SecurityViolationError
-from .memory import MemoryManager
 
 logger = logging.getLogger("brompt.core")
 
@@ -16,7 +21,13 @@ logger = logging.getLogger("brompt.core")
 class BromptEngine:
     """Core runtime engine enforcing deterministic execution and security guardrails."""
 
-    def __init__(self, config_path: str = "agent.brompt.yaml"):
+    def __init__(
+        self,
+        config_path: str = "agent.brompt.yaml",
+        provider: LLMProvider | None = None,
+        async_provider: LLMProvider | None = None,
+        audit_log_path: str | None = None,
+    ):
         manifest_file = Path(config_path)
         if not manifest_file.exists():
             raise FileNotFoundError(f"Manifest missing: {config_path}")
@@ -27,10 +38,11 @@ class BromptEngine:
         metadata = raw_manifest.get("metadata", {})
         sec_policy = raw_manifest.get("security_policy", {})
         mem_strategy = raw_manifest.get("memory_strategy", {})
+        rate_policy = raw_manifest.get("rate_limit", {})
 
         self.config = BromptConfig(
             name=metadata.get("name", "DefaultAgent"),
-            version=metadata.get("version", "1.0.0"),
+            version=metadata.get("version", "0.1.0-alpha"),
             environment=metadata.get("environment", "production"),
             security_policy=sec_policy,
             memory_strategy=mem_strategy,
@@ -38,53 +50,133 @@ class BromptEngine:
         self.memory = MemoryManager(
             max_turns=self.config.memory_strategy.max_history_turns
         )
+        self.rate_limiter = RateLimiter(
+            max_requests=rate_policy.get("max_requests", 30),
+            window_seconds=rate_policy.get("window_seconds", 60.0),
+        )
+        self.provider: LLMProvider | None = provider if provider is not None else build_provider_from_env()
+        self.async_provider: LLMProvider | None = async_provider
+        self.audit = AuditLog(
+            audit_log_path or str(manifest_file.parent / f"{manifest_file.stem}.audit.log")
+        )
         self.state_id = f"state_{uuid.uuid4().hex[:8]}"
 
+    # -- shared pipeline steps -------------------------------------------------
+
+    def _pre_process(
+        self, user_query: str, context: dict[str, Any] | None, caller_id: str
+    ) -> tuple[str, dict[str, Any]]:
+        """Rate limit, sanitize, update state, and record the user turn."""
+        self.rate_limiter.check(caller_id)
+
+        max_kb = self.config.security_policy.max_payload_size_kb
+        clean_query = SecurityEngine.sanitize(user_query, max_payload_size_kb=max_kb)
+
+        if context:
+            for k, v in context.items():
+                self.memory.update_state(k, v)
+
+        self.memory.add_turn("user", clean_query)
+
+        output_payload: dict[str, Any] = {
+            "processed_input": clean_query,
+            "engine_status": "ACTIVE",
+            "virtual_state": self.memory.get_state(),
+            "environment": self.config.environment,
+            "llm_response": None,
+            "provider_used": False,
+        }
+        return clean_query, output_payload
+
+    def _handle_rejection(self, err: Exception) -> ExecutionResult:
+        """Maps a pipeline exception to an ExecutionResult and audits it."""
+        if isinstance(err, RateLimitExceededError):
+            event, msg = "rate_limited", str(err)
+        elif isinstance(err, SecurityViolationError):
+            event, msg = "security_violation", str(err)
+        elif isinstance(err, ValueError):
+            event, msg = "value_error", str(err)
+        else:
+            logger.error("Unexpected engine error: %s", err, exc_info=err)
+            event, msg = "internal_error", f"Internal engine error: {type(err).__name__}"
+        if event in ("rate_limited", "security_violation"):
+            logger.warning("%s blocked execution: %s", event, err)
+        self.audit.record(event, self.state_id, False, str(err))
+        return ExecutionResult(state_id=self.state_id, is_secure=False, data={}, error_message=msg)
+
+    # -- synchronous path -------------------------------------------------------
+
     def execute(
-        self, user_query: str, context: Optional[Dict[str, Any]] = None
+        self,
+        user_query: str,
+        context: dict[str, Any] | None = None,
+        caller_id: str = "default",
+        system_prompt: str | None = None,
     ) -> ExecutionResult:
-        """Executes query payload through security filters and updates state."""
+        """Executes query payload through security filters, rate limiting,
+        bounded memory, and (if configured) the upstream LLM provider."""
         try:
-            # 1. Sanitize payload
-            max_kb = self.config.security_policy.max_payload_size_kb
-            clean_query = SecurityEngine.sanitize(user_query, max_payload_size_kb=max_kb)
-
-            # 2. Update Virtual Memory
-            if context:
-                for k, v in context.items():
-                    self.memory.update_state(k, v)
-
-            # 3. Formulate Output State
-            output_payload = {
-                "processed_input": clean_query,
-                "engine_status": "ACTIVE",
-                "virtual_state": self.memory.get_state(),
-                "environment": self.config.environment,
-            }
-
-            return ExecutionResult(
-                state_id=self.state_id, is_secure=True, data=output_payload
-            )
-        except SecurityViolationError as err:
-            logger.warning("Security violation blocked execution: %s", err)
-            return ExecutionResult(
-                state_id=self.state_id,
-                is_secure=False,
-                data={},
-                error_message=str(err),
-            )
-        except ValueError as err:
-            return ExecutionResult(
-                state_id=self.state_id,
-                is_secure=False,
-                data={},
-                error_message=str(err),
-            )
+            _, output_payload = self._pre_process(user_query, context, caller_id)
         except Exception as err:
-            logger.error("Unexpected engine error: %s", err, exc_info=True)
+            return self._handle_rejection(err)
+
+        if self.provider is not None:
+            try:
+                reply = self.provider.generate(self.memory.get_history(), system=system_prompt)
+                reply = SecurityEngine.sanitize_output(reply)
+                self.memory.add_turn("assistant", reply)
+                output_payload["llm_response"] = reply
+                output_payload["provider_used"] = True
+            except ProviderError as err:
+                logger.error("Provider call failed: %s", err)
+                self.audit.record("provider_error", self.state_id, False, str(err))
+                return ExecutionResult(
+                    state_id=self.state_id,
+                    is_secure=False,
+                    data=output_payload,
+                    error_message=f"Provider error: {err}",
+                )
+
+        self.audit.record("execute", self.state_id, True)
+        return ExecutionResult(state_id=self.state_id, is_secure=True, data=output_payload)
+
+    # -- asynchronous path --------------------------------------------------
+
+    async def execute_async(
+        self,
+        user_query: str,
+        context: dict[str, Any] | None = None,
+        caller_id: str = "default",
+        system_prompt: str | None = None,
+    ) -> ExecutionResult:
+        try:
+            _, output_payload = self._pre_process(user_query, context, caller_id)
+        except Exception as err:
+            return self._handle_rejection(err)
+
+        history = self.memory.get_history()
+        try:
+            if self.async_provider is not None:
+                reply = await self.async_provider.agenerate(history, system=system_prompt)
+            elif self.provider is not None:
+                reply = await asyncio.to_thread(self.provider.generate, history, system_prompt)
+            else:
+                reply = None
+        except ProviderError as err:
+            logger.error("Provider call failed: %s", err)
+            self.audit.record("provider_error", self.state_id, False, str(err))
             return ExecutionResult(
                 state_id=self.state_id,
                 is_secure=False,
-                data={},
-                error_message=f"Internal engine error: {type(err).__name__}",
+                data=output_payload,
+                error_message=f"Provider error: {err}",
             )
+
+        if reply is not None:
+            reply = SecurityEngine.sanitize_output(reply)
+            self.memory.add_turn("assistant", reply)
+            output_payload["llm_response"] = reply
+            output_payload["provider_used"] = True
+
+        self.audit.record("execute", self.state_id, True)
+        return ExecutionResult(state_id=self.state_id, is_secure=True, data=output_payload)

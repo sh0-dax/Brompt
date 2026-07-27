@@ -1,9 +1,9 @@
 """Unit tests for Core Runtime Engine and Schema Contracts."""
 
 import pytest
-from brompt.schema import BromptConfig, ExecutionResult, SecurityConfig, MemoryConfig
-from brompt.security import SecurityViolationError
+
 from brompt.core import BromptEngine
+from brompt.schema import BromptConfig, ExecutionResult, MemoryConfig, SecurityConfig
 
 
 class TestSchema:
@@ -45,6 +45,16 @@ class TestBromptEngine:
         config_file = tmp_path / "agent.brompt.yaml"
         config_file.write_text(config_text, encoding="utf-8")
         return BromptEngine(str(config_file))
+
+    def _write_config(self, tmp_path):
+        config_text = (
+            "metadata:\n  name: TestAgent\n  version: 0.1.0\n  environment: test\n"
+            "security_policy:\n  isolation_level: ZERO_TRUST\n  sanitize_inputs: true\n  max_payload_size_kb: 64\n"
+            "memory_strategy:\n  paging_mode: VIRTUAL_STATE_O1\n  max_history_turns: 3\n"
+        )
+        config_file = tmp_path / "agent.brompt.yaml"
+        config_file.write_text(config_text, encoding="utf-8")
+        return config_file
 
     def test_engine_init(self, tmp_path):
         engine = self._make_engine(tmp_path)
@@ -99,3 +109,97 @@ class TestBromptEngine:
         config_file.write_text("{{invalid yaml:: [}", encoding="utf-8")
         with pytest.raises(Exception):
             BromptEngine(str(config_file))
+
+    def test_engine_dry_run_without_provider(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+        monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        monkeypatch.delenv("LM_STUDIO_HOST", raising=False)
+        engine = self._make_engine(tmp_path)
+        result = engine.execute("Hello")
+        assert result.is_secure is True
+        assert result.data["provider_used"] is False
+        assert result.data["llm_response"] is None
+
+    def test_engine_uses_injected_provider(self, tmp_path):
+        class FakeProvider:
+            def generate(self, messages, system=None):
+                assert messages[-1]["role"] == "user"
+                return "fake reply"
+
+        engine = BromptEngine(
+            str(self._write_config(tmp_path)), provider=FakeProvider()
+        )
+        result = engine.execute("Hello")
+        assert result.is_secure is True
+        assert result.data["provider_used"] is True
+        assert result.data["llm_response"] == "fake reply"
+
+    def test_engine_records_audit_entries(self, tmp_path):
+        engine = self._make_engine(tmp_path)
+        engine.execute("Hello")
+        entries = engine.audit.read_all()
+        assert len(entries) == 1
+        assert entries[0]["event"] == "execute"
+        assert engine.audit.verify() is True
+
+    def test_engine_rate_limit_blocks_after_budget(self, tmp_path):
+        config_text = (
+            "metadata:\n  name: TestAgent\n  version: 0.1.0\n  environment: test\n"
+            "security_policy:\n  isolation_level: ZERO_TRUST\n  sanitize_inputs: true\n  max_payload_size_kb: 64\n"
+            "memory_strategy:\n  paging_mode: VIRTUAL_STATE_O1\n  max_history_turns: 3\n"
+            "rate_limit:\n  max_requests: 2\n  window_seconds: 60\n"
+        )
+        engine = self._make_engine(tmp_path, config_text=config_text)
+        engine.execute("one")
+        engine.execute("two")
+        result = engine.execute("three")
+        assert result.is_secure is False
+        assert "Rate limit exceeded" in result.error_message
+
+    @pytest.mark.asyncio
+    async def test_execute_async_dry_run(self, tmp_path):
+        engine = self._make_engine(tmp_path)
+        result = await engine.execute_async("Hello")
+        assert result.is_secure is True
+        assert result.data["provider_used"] is False
+
+    @pytest.mark.asyncio
+    async def test_execute_async_with_async_provider(self, tmp_path):
+        class FakeAsyncProvider:
+            async def agenerate(self, messages, system=None):
+                assert messages[-1]["role"] == "user"
+                return "async fake reply"
+
+        engine = BromptEngine(str(self._write_config(tmp_path)), async_provider=FakeAsyncProvider())
+        result = await engine.execute_async("Hello")
+        assert result.is_secure is True
+        assert result.data["llm_response"] == "async fake reply"
+
+    @pytest.mark.asyncio
+    async def test_execute_async_offloads_sync_provider_to_thread(self, tmp_path):
+        class FakeSyncProvider:
+            def generate(self, messages, system=None):
+                return "sync-via-thread reply"
+
+        engine = BromptEngine(str(self._write_config(tmp_path)), provider=FakeSyncProvider())
+        result = await engine.execute_async("Hello")
+        assert result.is_secure is True
+        assert result.data["llm_response"] == "sync-via-thread reply"
+
+    @pytest.mark.asyncio
+    async def test_execute_async_still_rate_limited(self, tmp_path):
+        config_text = (
+            "metadata:\n  name: TestAgent\n  version: 0.1.0\n  environment: test\n"
+            "security_policy:\n  isolation_level: ZERO_TRUST\n  sanitize_inputs: true\n  max_payload_size_kb: 64\n"
+            "memory_strategy:\n  paging_mode: VIRTUAL_STATE_O1\n  max_history_turns: 3\n"
+            "rate_limit:\n  max_requests: 1\n  window_seconds: 60\n"
+        )
+        engine = self._make_engine(tmp_path, config_text=config_text)
+        await engine.execute_async("one")
+        result = await engine.execute_async("two")
+        assert result.is_secure is False
+        assert "Rate limit exceeded" in result.error_message

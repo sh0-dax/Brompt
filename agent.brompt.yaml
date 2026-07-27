@@ -1,6 +1,6 @@
 metadata:
   name: "ProductionAgentEngine"
-  version: "1.0.0-alpha"
+  version: "0.1.0-alpha"
   environment: "production"
 
 security_policy:
@@ -11,6 +11,10 @@ security_policy:
 memory_strategy:
   paging_mode: "VIRTUAL_STATE_O1"
   max_history_turns: 3
+
+rate_limit:
+  max_requests: 30
+  window_seconds: 60
 
 schema_validation:
   strict_mode: true
