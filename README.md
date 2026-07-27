@@ -12,7 +12,7 @@ High-performance, zero-trust AI middleware runtime for deterministic LLM executi
 
 ```bash
 # Clone
-git clone https://github.com/Azzouzoumnia/Brompt.git
+git clone https://github.com/sh0-dax/Brompt.git
 cd Brompt
 
 # Install
