@@ -20,6 +20,8 @@
 
 The **Brompt Engine** addresses the fundamental limitations of modern LLM agents: non-deterministic execution paths and linear context drift (`O(N)` token growth). It acts as an execution middleware positioning itself between host application environments and upstream model endpoints.
 
+**Performance Note:** While theoretical complexity is `O(N)` due to input sanitization scanning, strict payload bounds (64KB max) make performance effectively near-constant `O(1)` in practice.
+
 ```text
 [ Application Payload ]
          │
@@ -27,8 +29,8 @@ The **Brompt Engine** addresses the fundamental limitations of modern LLM agents
  ┌─────────────────────────────────────────────────────────────┐
  │                       BROMPT RUNTIME                        │
  │                                                             │
-│   1. Security Ingress Pipeline (Pattern Sanitize / Validate)  │
-│   2. Bounded State Management Engine (Fixed-Size Context)     │
+ │   1. Security Ingress Pipeline (Pattern Sanitize / Validate)│
+ │   2. Bounded State Management Engine (Fixed-Size Context)   │
  │   3. Schema Validator & JSON Contract Enforcement           │
  └─────────────────────────────────────────────────────────────┘
          │
@@ -40,9 +42,10 @@ The **Brompt Engine** addresses the fundamental limitations of modern LLM agents
 
 | Pillar | Description |
 |---|---|
-| **Zero-Trust Guardrails** | Deterministic regex with word boundaries, payload size enforcement, and pattern matching prevent jailbreaks and payload leakage |
+| **Defense in Depth Security** | Multi-layered protection with input sanitization, pattern matching, payload size limits, and planned rate limiting & audit logging |
 | **Bounded State Management** | Thread-safe state dictionary with fixed-size context tracking — no raw message accumulation across turns |
 | **Structured Type Contracts** | Pydantic v2 schema validation guarantees typed, programmatic outputs for downstream tooling |
+| **Modern Type Safety** | Updated Python 3.10+ type annotations for better IDE support and static analysis |
 
 ---
 
@@ -134,17 +137,17 @@ Core runtime entry point. Loads YAML manifest and initializes all subsystems.
 
 ### `SecurityEngine.sanitize(text)`
 
-Static method. Validates input against adversarial patterns. Raises `ValueError` on violation.
+Static method. Validates input against adversarial patterns. Raises `SecurityViolationError` or `ValueError` on violation.
 
 ### `MemoryManager(max_turns)`
 
-Virtual state engine for bounded context management.
+Bounded state manager for fixed-size context tracking.
 
 | Method | Returns | Description |
 |---|---|---|
-| `update_state(key, value)` | `None` | Sets a key in the state dictionary |
-| `get_state()` | `Dict[str, Any]` | Returns a copy of the current state |
-| `clear()` | `None` | Flushes all state |
+| `update_state(key, value)` | `None` | Thread-safe state update |
+| `get_state()` | `Dict[str, Any]` | Returns a snapshot copy of the current state |
+| `clear()` | `None` | Thread-safe state flush |
 
 ---
 
@@ -159,12 +162,26 @@ matrix:
 
 ---
 
-## 7. License
+## 7. Production Readiness
+
+**Current Status: Alpha** — This engine is in active development and requires the following before production deployment:
+
+- ✅ Security guardrails with input sanitization
+- ✅ Bounded memory management
+- ✅ Schema validation
+- ⚠️ **Pending:** Rate limiting implementation
+- ⚠️ **Pending:** Security audit logging
+- ⚠️ **Pending:** Output sanitization layer
+- ⚠️ **Pending:** Async/await support for high concurrency
+
+---
+
+## 8. License
 
 MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
 <p align="center">
-  <sub>Built by <b>SH ÂZZOUZ</b> — sh0-dax</sub>
+  <sub>Built by ❤️ <b>SH ÂZZOUZ</b> — sh0-dax</sub>
 </p>
