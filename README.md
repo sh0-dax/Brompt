@@ -1,5 +1,3 @@
-# Brompt Engine
-
 ```
      ███████████                                                █████   
     ░░███░░░░░███                                              ░░███    
@@ -14,15 +12,104 @@
                                                 ░░░░░               
 ```
 
-High-performance, zero-trust AI middleware runtime for deterministic LLM execution.
+---
 
-## Features
+# 🛡️ Brompt Engine
 
-- **Zero-Trust Guardrail Pipeline** -- Sanitizes both ingress and egress payloads against adversarial prompt injection patterns.
-- **Virtual State Paging** -- O(1) state architecture that prevents unbounded context token growth.
-- **Strict Structural Enforcement** -- Pydantic v2 validation cores for guaranteed output schemas.
+**Repository:** [https://github.com/sh0-dax/Brompt.git](https://github.com/sh0-dax/Brompt.git)
 
-## Quick Start
+**Project Name:** Brompt Engine
+
+**Classification:** Zero-Trust AI Execution Runtime & State Engine
+
+**Target Release:** `v0.1.0-alpha`
+
+**Author:** SH ÂZZOUZ
+
+---
+
+## 1. System Architecture Overview
+
+The **Brompt Engine** addresses the fundamental limitations of modern LLM agents: non-deterministic execution paths and linear context drift (`O(N)` token growth). It acts as an execution middleware positioning itself between host application environments and upstream model endpoints.
+
+```text
+[ Application Payload ]
+         │
+         ▼
+ ┌─────────────────────────────────────────────────────────────┐
+ │                       BROMPT RUNTIME                        │
+ │                                                             │
+ │   1. Security Ingress Pipeline (Pattern Sanitize / AST)    │
+ │   2. Virtual State Paging Engine (O(1) Memory State)       │
+ │   3. Schema Validator & JSON Contract Enforcement           │
+ └─────────────────────────────────────────────────────────────┘
+         │
+         ▼
+[ Upstream LLM Provider ]
+```
+
+### Core Architecture Pillars:
+
+| Pillar | Description |
+|---|---|
+| **Zero-Trust Guardrails** | Deterministic regex and pattern matching prevent jailbreaks, prompt overrides, and payload leakage |
+| **Virtual State Memory** | `O(1)` bounded state dictionary replaces raw message concatenation — fixed memory regardless of session depth |
+| **Structured Type Contracts** | Pydantic v2 schema validation guarantees typed, programmatic outputs for downstream tooling |
+
+---
+
+## 2. Repository Layout
+
+```text
+Brompt/
+├── .github/
+│   └── workflows/
+│       └── ci.yml                 # GitHub Actions CI/CD Pipeline
+├── src/
+│   └── brompt/
+│       ├── __init__.py
+│       ├── schema.py              # Data Models & System Schemas
+│       ├── security.py            # Guardrails & Ingress Filtering
+│       ├── memory.py              # Virtual State Engine (O(1) Paging)
+│       ├── core.py                # Main Execution Runtime Engine
+│       └── cli.py                 # Rich Terminal User Interface (TUI)
+├── tests/
+│   ├── test_core.py               # Core Runtime Unit Tests
+│   ├── test_security.py           # Security Filter Unit Tests
+│   └── test_memory.py             # Memory Engine Unit Tests
+├── agent.brompt.yaml              # Declarative Runtime Manifest
+├── pyproject.toml                 # Package Configuration & Dependencies
+└── README.md                      # Technical Specification
+```
+
+---
+
+## 3. Configuration Manifest
+
+Runtime behavior is governed by `agent.brompt.yaml`:
+
+```yaml
+metadata:
+  name: "ProductionAgentEngine"
+  version: "0.1.0-alpha"
+  environment: "production"
+
+security_policy:
+  isolation_level: "ZERO_TRUST"
+  sanitize_inputs: true
+  max_payload_size_kb: 64
+
+memory_strategy:
+  paging_mode: "VIRTUAL_STATE_O1"
+  max_history_turns: 3
+
+schema_validation:
+  strict_mode: true
+```
+
+---
+
+## 4. Quick Start
 
 ```bash
 # Clone
@@ -35,49 +122,61 @@ source venv/bin/activate
 pip install -e ".[dev]"
 
 # Run tests
-pytest
+pytest -v
 
 # Launch CLI
 brompt
 ```
 
-## Project Structure
+---
 
-```
-brompt-engine/
-├── src/brompt/
-│   ├── __init__.py
-│   ├── schema.py        # Pydantic data contracts
-│   ├── security.py      # Zero-trust sanitization pipeline
-│   ├── core.py          # Execution runtime engine
-│   └── cli.py           # Rich-based terminal UI
-├── tests/
-│   └── test_engine.py   # Test suite
-├── agent.brompt.yaml    # Runtime policy manifest
-├── pyproject.toml
-└── README.md
-```
+## 5. API Reference
 
-## Configuration
+### `BromptEngine(config_path)`
 
-Runtime behavior is governed by `agent.brompt.yaml`:
+Core runtime entry point. Loads YAML manifest and initializes all subsystems.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `config_path` | `str` | `"agent.brompt.yaml"` | Path to runtime manifest |
+
+**Methods:**
+
+- `execute(user_query, context=None) → ExecutionResult` — Processes a query through the full guardrail pipeline.
+
+### `SecurityEngine.sanitize(text)`
+
+Static method. Validates input against adversarial patterns. Raises `ValueError` on violation.
+
+### `MemoryManager(max_turns)`
+
+Virtual state engine for `O(1)` context management.
+
+| Method | Returns | Description |
+|---|---|---|
+| `update_state(key, value)` | `None` | Sets a key in the state dictionary |
+| `get_state()` | `Dict[str, Any]` | Returns a copy of the current state |
+| `clear()` | `None` | Flushes all state |
+
+---
+
+## 6. CI/CD Pipeline
+
+GitHub Actions runs tests on every push/PR across Python 3.10–3.13:
 
 ```yaml
-metadata:
-  name: "ProductionAgentEngine"
-  version: "1.0.0-alpha"
-  environment: "production"
-
-security_policy:
-  isolation_level: "ZERO_TRUST"
-  sanitize_inputs: true
-  max_payload_size_kb: 64
-
-memory_strategy:
-  paging_mode: "VIRTUAL_STATE_O1"
-  max_history_turns: 3
+matrix:
+  python-version: ["3.10", "3.11", "3.12", "3.13"]
 ```
 
-## License
+---
 
-MIT
+## 7. License
+
+MIT License — see [LICENSE](LICENSE) for details.
+
+---
+
+<p align="center">
+  <sub>Built by <b>SH ÂZZOUZ</b> — sh0-dax</sub>
+</p>
