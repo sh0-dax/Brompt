@@ -13,3 +13,5 @@ venv/
 .ruff_cache/
 .coverage
 *.audit.log
+.env
+.env.*

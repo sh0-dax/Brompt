@@ -12,8 +12,14 @@ Each provider is an optional dependency -- install only what you need:
     pip install 'brompt-engine[all]'
 """
 
+import asyncio
+import logging
 import os
+import random
+import time
 from abc import ABC, abstractmethod
+
+logger = logging.getLogger("brompt.providers")
 
 
 class ProviderError(RuntimeError):
@@ -227,6 +233,22 @@ class OllamaProvider(LLMProvider):
 
 
 # ---------------------------------------------------------------------------
+# Rate-limit retry helpers (used by Gemini providers)
+# ---------------------------------------------------------------------------
+
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 1.0
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Return True when *exc* represents a HTTP 429 / rate-limit response."""
+    if getattr(exc, "code", None) == 429:
+        return True
+    msg = str(exc).lower()
+    return "429" in msg or "resource_exhausted" in msg or "toomanyrequests" in msg
+
+
+# ---------------------------------------------------------------------------
 # Google Gemini
 # ---------------------------------------------------------------------------
 
@@ -249,21 +271,36 @@ class GeminiProvider(LLMProvider):
     def generate(self, messages: list[dict[str, str]], system: str | None = None) -> str:
         if not messages:
             raise ProviderError("Cannot call provider with empty message history.")
-        try:
-            contents = []
-            for msg in messages:
-                role = "user" if msg["role"] in ("user", "system") else "model"
-                contents.append({"role": role, "parts": [{"text": msg["content"]}]})
-            kwargs: dict = {"model": self.model, "contents": contents}
-            if system:
-                kwargs["config"] = {"system_instruction": system}
-            response = self._client.models.generate_content(**kwargs)
-        except Exception as exc:
-            raise ProviderError(f"Gemini API call failed: {exc}") from exc
-        text = response.text
-        if not text:
-            raise ProviderError("Gemini response contained no text content.")
-        return text
+        contents = []
+        for msg in messages:
+            role = "user" if msg["role"] in ("user", "system") else "model"
+            contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+        kwargs: dict = {"model": self.model, "contents": contents}
+        if system:
+            kwargs["config"] = {"system_instruction": system}
+
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                response = self._client.models.generate_content(**kwargs)
+                text = response.text
+                if not text:
+                    raise ProviderError("Gemini response contained no text content.")
+                return text
+            except Exception as exc:
+                last_exc = exc
+                if _is_rate_limit_error(exc) and attempt < _MAX_RETRIES:
+                    delay = _RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 0.5)
+                    logger.warning(
+                        "Gemini rate-limited (429), retrying in %.1fs (attempt %d/%d)",
+                        delay, attempt + 1, _MAX_RETRIES,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise ProviderError(f"Gemini API call failed: {exc}") from exc
+        raise ProviderError(
+            f"Gemini API call failed after {_MAX_RETRIES} retries: {last_exc}"
+        ) from last_exc
 
 
 class AsyncGeminiProvider(LLMProvider):
@@ -288,21 +325,36 @@ class AsyncGeminiProvider(LLMProvider):
     async def agenerate(self, messages: list[dict[str, str]], system: str | None = None) -> str:
         if not messages:
             raise ProviderError("Cannot call provider with empty message history.")
-        try:
-            contents = []
-            for msg in messages:
-                role = "user" if msg["role"] in ("user", "system") else "model"
-                contents.append({"role": role, "parts": [{"text": msg["content"]}]})
-            kwargs: dict = {"model": self.model, "contents": contents}
-            if system:
-                kwargs["config"] = {"system_instruction": system}
-            response = await self._client.aio.models.generate_content(**kwargs)
-        except Exception as exc:
-            raise ProviderError(f"Gemini API call failed: {exc}") from exc
-        text = response.text
-        if not text:
-            raise ProviderError("Gemini response contained no text content.")
-        return text
+        contents = []
+        for msg in messages:
+            role = "user" if msg["role"] in ("user", "system") else "model"
+            contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+        kwargs: dict = {"model": self.model, "contents": contents}
+        if system:
+            kwargs["config"] = {"system_instruction": system}
+
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                response = await self._client.aio.models.generate_content(**kwargs)
+                text = response.text
+                if not text:
+                    raise ProviderError("Gemini response contained no text content.")
+                return text
+            except Exception as exc:
+                last_exc = exc
+                if _is_rate_limit_error(exc) and attempt < _MAX_RETRIES:
+                    delay = _RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 0.5)
+                    logger.warning(
+                        "Gemini rate-limited (429), retrying in %.1fs (attempt %d/%d)",
+                        delay, attempt + 1, _MAX_RETRIES,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise ProviderError(f"Gemini API call failed: {exc}") from exc
+        raise ProviderError(
+            f"Gemini API call failed after {_MAX_RETRIES} retries: {last_exc}"
+        ) from last_exc
 
 
 # ---------------------------------------------------------------------------
