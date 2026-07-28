@@ -12,7 +12,7 @@ import yaml
 from .audit import AuditLog
 from .classifier import InjectionClassificationError, InjectionClassifier
 from .memory import MemoryManager
-from .providers import LLMProvider, ProviderError, build_provider_from_env
+from ._providers_legacy import LLMProvider, ProviderError, build_provider_from_env
 from .ratelimit import RateLimiter, RateLimiterBackend, RateLimitExceededError
 from .schema import BromptConfig, ExecutionResult
 from .security import SecurityEngine, SecurityViolationError

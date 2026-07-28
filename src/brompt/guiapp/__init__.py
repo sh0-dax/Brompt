@@ -1,7 +1,7 @@
 """Brompt Engine — Floating Widget (package entry point).
 
 Always-on-top dark-themed panel with Docs, Live, and Chart tabs.
-Usage:  python -m brompt.widget [--live]
+Usage:  python -m brompt.guiapp [--live]
 """
 
 import sys

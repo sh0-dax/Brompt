@@ -189,7 +189,7 @@ class TestBromptEngine:
 
     def test_engine_classifier_fails_open_on_provider_error(self, tmp_path):
         from brompt.classifier import LLMInjectionClassifier
-        from brompt.providers import ProviderError
+        from brompt._providers_legacy import ProviderError
 
         class BrokenClassifierProvider:
             def generate(self, messages, system=None):

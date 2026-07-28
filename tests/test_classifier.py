@@ -6,7 +6,7 @@ from brompt.classifier import (
     InjectionClassificationError,
     LLMInjectionClassifier,
 )
-from brompt.providers import ProviderError
+from brompt._providers_legacy import ProviderError
 
 
 class FakeProvider:

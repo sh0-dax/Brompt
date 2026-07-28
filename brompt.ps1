@@ -54,7 +54,7 @@ switch ($Command) {
   "widget" {
     Write-Host "Launching floating widget (no console window)..." -ForegroundColor Cyan
     $env:PYTHONPATH = "$root\src"
-    & pythonw -m brompt.widget --live
+    & pythonw -m brompt.guiapp --live
   }
   "clean" {
     Write-Host "Cleaning caches..." -ForegroundColor Cyan
