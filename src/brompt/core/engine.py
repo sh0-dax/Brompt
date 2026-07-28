@@ -9,15 +9,15 @@ from typing import Any
 
 import yaml
 
-from .audit import AuditLog
-from .classifier import InjectionClassificationError, InjectionClassifier
-from .memory import MemoryManager
-from ._providers_legacy import LLMProvider, ProviderError, build_provider_from_env
-from .ratelimit import RateLimiter, RateLimiterBackend, RateLimitExceededError
-from .schema import BromptConfig, ExecutionResult
-from .security import SecurityEngine, SecurityViolationError
+from ..audit import AuditLog
+from ..classifier import InjectionClassificationError, InjectionClassifier
+from ..memory import MemoryManager
+from .._providers_legacy import LLMProvider, ProviderError, build_provider_from_env
+from ..ratelimit import RateLimiter, RateLimiterBackend, RateLimitExceededError
+from ..schema import BromptConfig, ExecutionResult
+from ..security import SecurityEngine, SecurityViolationError
 
-logger = logging.getLogger("brompt.core")
+logger = logging.getLogger("brompt.core.engine")
 
 _UNSET = object()
 
@@ -56,23 +56,15 @@ class BromptEngine:
         self.memory = MemoryManager(
             max_turns=self.config.memory_strategy.max_history_turns
         )
-        # Explicit rate_limiter (e.g. RedisRateLimiter for multi-instance
-        # deployments) takes precedence; otherwise fall back to the
-        # in-process, single-instance limiter built from the manifest.
         self.rate_limiter: RateLimiterBackend = rate_limiter or RateLimiter(
             max_requests=rate_policy.get("max_requests", 30),
             window_seconds=rate_policy.get("window_seconds", 60.0),
         )
-        # Explicit provider > env-configured provider > None (dry-run mode).
         if provider is _UNSET:
             self.provider: LLMProvider | None = build_provider_from_env()
         else:
             self.provider: LLMProvider | None = provider
-        # Separate slot for an async-capable provider (execute_async).
         self.async_provider: LLMProvider | None = async_provider
-        # Optional semantic second pass beyond the regex blocklist. Off by
-        # default (extra latency/cost per request) -- pass e.g.
-        # LLMInjectionClassifier(some_provider) to enable it.
         self.injection_classifier: InjectionClassifier | None = injection_classifier
         self.audit = AuditLog(
             audit_log_path or str(manifest_file.parent / f"{manifest_file.stem}.audit.log")
@@ -92,9 +84,6 @@ class BromptEngine:
         max_kb = self.config.security_policy.max_payload_size_kb
         clean_query = SecurityEngine.sanitize(user_query, max_payload_size_kb=max_kb)
 
-        # Second, semantic pass: catches paraphrased/obfuscated attempts the
-        # regex blocklist misses. Fails *open* on classifier errors -- the
-        # regex layer still applies either way.
         if self.injection_classifier is not None:
             try:
                 blocked = self.injection_classifier.is_blocked(clean_query)

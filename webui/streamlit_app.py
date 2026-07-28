@@ -1,0 +1,140 @@
+"""Brompt Web UI — Streamlit-based interface for the Brompt Engine."""
+
+import os
+import sys
+import json
+from pathlib import Path
+
+import streamlit as st
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+from brompt.core.engine import BromptEngine
+from brompt.hooks import hooks_manager, LoggingHook, TimingHook
+from brompt.observability import metrics, tracer
+from brompt.core.template_engine import template_registry
+
+st.set_page_config(
+    page_title="Brompt Engine",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# --- session state ----------------------------------------------------------
+
+if "engine" not in st.session_state:
+    st.session_state.engine = None
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "config_path" not in st.session_state:
+    st.session_state.config_path = "agent.brompt.yaml"
+
+# --- sidebar ----------------------------------------------------------------
+
+with st.sidebar:
+    st.title("⚡ Brompt Engine")
+    st.caption("Deterministic State-Driven LLM Orchestration")
+
+    config_path = st.text_input("Config path", value=st.session_state.config_path)
+
+    if st.button("🔄 Initialize Engine", use_container_width=True):
+        try:
+            engine = BromptEngine(config_path)
+            hooks_manager.register(LoggingHook())
+            hooks_manager.register(TimingHook())
+            st.session_state.engine = engine
+            st.session_state.config_path = config_path
+            st.success(f"Engine initialized: {type(engine.provider).__name__ if engine.provider else 'dry-run'}")
+        except Exception as exc:
+            st.error(f"Failed to initialize: {exc}")
+
+    st.divider()
+
+    st.subheader("Templates")
+    template_names = template_registry.list()
+    selected_template = st.selectbox("Select template", [""] + template_names)
+    if selected_template:
+        tpl = template_registry.get(selected_template)
+        st.code(tpl.source[:500] if tpl else "", language="text")
+
+    st.divider()
+
+    st.subheader("System")
+    if st.button("Clear History", use_container_width=True):
+        st.session_state.messages = []
+        if st.session_state.engine:
+            st.session_state.engine.memory.clear()
+        st.rerun()
+
+# --- main panel -------------------------------------------------------------
+
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    st.subheader("💬 Chat")
+
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if prompt := st.chat_input("Type your message..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        if st.session_state.engine:
+            with st.chat_message("assistant"):
+                with st.spinner("Processing..."):
+                    try:
+                        query, ctx = hooks_manager.before_execute(prompt, None)
+                        result = st.session_state.engine.execute(query, ctx)
+                        result = hooks_manager.after_execute(result)
+                        if result.is_secure:
+                            response = result.data.get("llm_response", "")
+                            if response:
+                                st.markdown(response)
+                                st.session_state.messages.append({"role": "assistant", "content": response})
+                            else:
+                                st.info("No response (dry-run mode)")
+                        else:
+                            st.error(f"Error: {result.error_message}")
+                    except Exception as exc:
+                        st.error(f"Error: {exc}")
+        else:
+            st.info("Initialize the engine from the sidebar first.")
+
+with col2:
+    st.subheader("📊 Metrics")
+
+    if st.session_state.engine:
+        engine = st.session_state.engine
+        provider_name = type(engine.provider).__name__ if engine.provider else "None"
+
+        with st.expander("Engine Status", expanded=True):
+            st.metric("Provider", provider_name)
+            st.metric("State ID", engine.state_id[:16])
+            st.metric("History", len(engine.memory.get_history()))
+            st.metric("Audit Entries", len(engine.audit.read_all()))
+
+        with st.expander("Observability", expanded=False):
+            snap = metrics.snapshot()
+            st.json(snap)
+
+        with st.expander("Audit Log", expanded=False):
+            entries = engine.audit.read_all()
+            if entries:
+                st.json(entries[-10:])
+            else:
+                st.caption("No entries")
+
+        with st.expander("Templates", expanded=False):
+            names = template_registry.list()
+            for name in names:
+                st.caption(f"• {name}")
+    else:
+        st.info("Initialize the engine to see metrics.")
+
+
+if __name__ == "__main__":
+    pass

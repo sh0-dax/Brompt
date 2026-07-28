@@ -41,6 +41,8 @@ class ProviderFactory:
     _type_mapping = {
         ProviderType.OPENAI: "openai",
         ProviderType.ANTHROPIC: "anthropic",
+        ProviderType.GOOGLE: "google",
+        ProviderType.LOCAL: "ollama",
     }
 
     @classmethod

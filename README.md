@@ -100,7 +100,12 @@ design on the application side.
 | **Bounded State Management** | Thread-safe `deque(maxlen=max_turns)` turn history — no raw message accumulation across turns |
 | **Structured Type Contracts** | Pydantic v2 schema validation guarantees typed, programmatic outputs for downstream tooling |
 | **Modern Type Safety** | Python 3.10+ `dict`, `list`, `str \| None` annotations for better IDE support and static analysis |
-| **Pluggable Provider System** | 6 LLM providers: Anthropic, OpenAI, Ollama, Gemini, Mistral, Azure OpenAI, LM Studio — sync + async |
+| **Pluggable Provider System** | 7 LLM providers: Anthropic, OpenAI, Ollama, Gemini, Mistral, Azure OpenAI, LM Studio — sync + async |
+| **Template Engine** | Variable interpolation, filters (`upper`, `json`, `now`, etc.), conditionals, loops — 6 built-in prompt templates |
+| **Hooks/Middleware** | Pipeline hooks (Logging, Timing, Validation, Audit, RateLimit, Security) with before/after execution |
+| **Observability** | Distributed tracing, Prometheus-format metrics, alert rules with condition evaluation |
+| **CLI (Typer)** | 8 commands: `chat`, `run`, `history`, `audit`, `status`, `templates`, `config`, `clear` |
+| **Web UI** | Streamlit-based interface with chat panel, metrics dashboard, audit viewer, template browser |
 
 ---
 
@@ -110,31 +115,59 @@ design on the application side.
 Brompt/
 ├── .github/
 │   └── workflows/
-│       └── ci.yml                 # GitHub Actions CI/CD Pipeline
+│       └── ci.yml                    # GitHub Actions CI/CD Pipeline
 ├── assets/
-│   ├── dark.png                   # Dark mode banner
-│   └── light.png                  # Light mode banner
+│   ├── dark.png                      # Dark mode banner
+│   └── light.png                     # Light mode banner
 ├── src/
 │   └── brompt/
-│       ├── __init__.py
-│       ├── schema.py              # Data Models & System Schemas
-│       ├── security.py            # Ingress filtering + output redaction
-│       ├── memory.py              # Bounded turn history + session state (Thread-Safe)
-│       ├── providers.py           # Pluggable upstream LLM providers (6 providers)
-│       ├── ratelimit.py           # Per-caller sliding-window rate limiter
-│       ├── audit.py               # Hash-chained, tamper-evident audit log
-│       ├── core.py                # Main Execution Runtime Engine
-│       └── cli.py                 # Rich Terminal User Interface (TUI)
+│       ├── __init__.py               # Package root — exports all public API
+│       ├── _cli_legacy.py            # Legacy TUI (preserved for compatibility)
+│       ├── _providers_legacy.py      # Legacy provider system (sync)
+│       ├── schema.py                 # Data Models & System Schemas
+│       ├── security.py               # Ingress filtering + output redaction
+│       ├── memory.py                 # Bounded turn history + session state (Thread-Safe)
+│       ├── ratelimit.py              # Per-caller sliding-window rate limiter
+│       ├── audit.py                  # Hash-chained, tamper-evident audit log
+│       ├── config.py                 # Dataclass configs (WidgetConfig, ProviderConfig, etc.)
+│       ├── session.py                # Session management (Session, SessionManager, Message)
+│       ├── widget.py                 # Unified BromptWidget entry point
+│       ├── hooks.py                  # Hooks/middleware system (Logging, Timing, Validation, etc.)
+│       ├── observability.py          # Tracing, metrics (Prometheus), alert management
+│       ├── core/
+│       │   ├── __init__.py           # Re-exports BromptEngine
+│       │   ├── engine.py             # Main Execution Runtime Engine
+│       │   └── template_engine.py    # Template engine (variables, filters, control flow, 6 built-in templates)
+│       ├── providers/
+│       │   ├── __init__.py           # Provider registry with all 7 providers
+│       │   ├── base.py               # Abstract LLMProvider base class
+│       │   ├── factory.py            # ProviderFactory + ProviderRegistry
+│       │   ├── openai_provider.py    # OpenAI / ChatGPT / GPT-4o
+│       │   ├── anthropic_provider.py # Anthropic / Claude
+│       │   ├── google_provider.py    # Google Gemini
+│       │   ├── mistral_provider.py   # Mistral AI
+│       │   ├── ollama_provider.py    # Ollama (local)
+│       │   └── azure_provider.py     # Azure OpenAI
+│       ├── cli/
+│       │   ├── __init__.py           # CLI package
+│       │   └── main.py               # Typer-based CLI (8 commands)
+│       ├── guiapp/                   # Tkinter GUI application
+│       ├── api/                      # FastAPI REST API server
+│       └── feedback/                 # Feedback loop system
+├── webui/
+│   └── streamlit_app.py             # Streamlit web UI
 ├── tests/
-│   ├── test_core.py               # Core Runtime Unit Tests
-│   ├── test_security.py           # Security Filter Unit Tests
-│   ├── test_memory.py             # Memory Engine Unit Tests
-│   ├── test_providers.py          # Provider Abstraction Unit Tests
-│   ├── test_ratelimit.py          # Rate Limiter Unit Tests
-│   └── test_audit.py              # Audit Log Unit Tests
-├── agent.brompt.yaml              # Declarative Runtime Manifest
-├── pyproject.toml                 # Package Configuration & Dependencies
-└── README.md                      # Technical Specification
+│   ├── test_core.py                 # Core Runtime Unit Tests
+│   ├── test_security.py             # Security Filter Unit Tests
+│   ├── test_memory.py               # Memory Engine Unit Tests
+│   ├── test_providers.py            # Provider Abstraction Unit Tests
+│   ├── test_ratelimit.py            # Rate Limiter Unit Tests
+│   ├── test_audit.py                # Audit Log Unit Tests
+│   ├── test_api.py                  # API endpoint tests
+│   └── ...                          # Feedback, retry, classifier, etc.
+├── agent.brompt.yaml                # Declarative Runtime Manifest
+├── pyproject.toml                   # Package Configuration & Dependencies
+└── README.md                        # Technical Specification
 ```
 
 ---
@@ -187,20 +220,29 @@ pip install -e ".[gemini]"        # Google Gemini
 pip install -e ".[mistral]"       # Mistral
 pip install -e ".[azure]"         # Azure OpenAI
 pip install -e ".[lmstudio]"      # LM Studio (local)
-pip install -e ".[all]"           # All providers
+pip install -e ".[all]"           # All providers + web UI
 
 # Run tests
 pytest -v
 
-# Launch CLI
-brompt
+# Launch CLI (interactive chat)
+brompt chat
+
+# Run a single prompt
+brompt run "What is the capital of France?"
+
+# List available templates
+brompt templates
+
+# Launch web UI (requires pip install -e ".[webui]")
+streamlit run webui/streamlit_app.py
 ```
 
 ---
 
 ## 5. Providers
 
-Brompt supports **6 LLM providers** via a pluggable provider system. Each is an optional dependency — install only what you need.
+Brompt supports **7 LLM providers** via a pluggable provider system. Each is an optional dependency — install only what you need.
 
 ### Provider Matrix
 
@@ -314,6 +356,111 @@ SHA-256 hash-chained, append-only audit log.
 
 ---
 
+### CLI Commands
+
+```text
+Usage: brompt [OPTIONS] COMMAND [ARGS]...
+
+Commands:
+  chat       Start an interactive chat session
+  run        Execute a single prompt
+  history    Show conversation history
+  audit      Show audit log entries
+  status     Show engine status and configuration
+  templates  List or render prompt templates
+  config     Show or validate a Brompt config file
+  clear      Clear engine memory and history
+```
+
+### `BromptWidget(config=None)`
+
+Unified high-level entry point combining engine, session, and widget config.
+
+```python
+from brompt import BromptWidget
+
+widget = BromptWidget()
+result = widget.execute("Hello!")
+print(result.data)
+```
+
+### Template Engine
+
+```python
+from brompt import Template, template_registry
+
+# Simple template with filters
+t = Template("Hello {{ name|upper }}!", name="greeting")
+print(t.render(name="world"))  # "Hello WORLD!"
+
+# Built-in templates
+rendered = template_registry.render("chat",
+    user_message="What's new?",
+    system_prompt="You are a helpful assistant.",
+    messages=[],
+)
+
+# Register custom template
+from brompt.core.template_engine import create_builtin_templates
+reg = create_builtin_templates()
+reg.render("code_review", language="python", code="print('hello')")
+```
+
+**Built-in templates:** `chat`, `code_review`, `summarize`, `translate`, `analysis`, `debug`
+
+**Filters:** `upper`, `lower`, `capitalize`, `title`, `trim`, `json`, `now`
+
+### Hooks / Middleware
+
+```python
+from brompt import HooksManager, LoggingHook, TimingHook, ValidationHook
+
+hooks = HooksManager()
+hooks.register(LoggingHook())
+hooks.register(TimingHook())
+
+query, ctx = hooks.before_execute("Hello", None)
+result = engine.execute(query, ctx)
+result = hooks.after_execute(result)
+```
+
+**Built-in hooks:** `LoggingHook`, `TimingHook`, `ValidationHook`, `AuditHook`, `RateLimitHook`, `SecurityHook`
+
+### Observability
+
+```python
+from brompt import tracer, metrics, AlertManager, AlertRule
+
+# Tracing
+span = tracer.start_span("llm_call", attributes={"model": "gpt-4"})
+span.finish()
+
+# Metrics
+metrics.inc("api_calls")
+metrics.observe("latency_ms", 320.5)
+print(metrics.export_prometheus())
+
+# Alerts
+am = AlertManager()
+am.add_rule(AlertRule(
+    name="high_error_rate",
+    condition=lambda ctx: ctx.get("errors", 0) > 10,
+    message="Error rate exceeds threshold",
+))
+am.evaluate({"errors": 15})
+```
+
+### Web UI
+
+```bash
+pip install -e ".[webui]"
+streamlit run webui/streamlit_app.py
+```
+
+Opens a browser-based interface with chat panel, metrics dashboard, audit log viewer, and template browser.
+
+---
+
 ## 7. CI/CD Pipeline
 
 GitHub Actions runs tests on every push/PR across Python 3.10–3.13:
@@ -335,8 +482,12 @@ matrix:
 - ✅ Rate limiting (in-process sliding window; not distributed — multi-instance needs Redis)
 - ✅ Security audit logging (SHA-256 hash-chained, append-only, tamper-evident via `AuditLog.verify()`)
 - ✅ Output sanitization layer (redacts secret-like strings before they reach the caller)
-- ✅ 6 LLM providers (Anthropic, OpenAI, Ollama, Gemini, Mistral, Azure OpenAI, LM Studio)
+- ✅ 7 LLM providers (Anthropic, OpenAI, Ollama, Gemini, Mistral, Azure OpenAI, LM Studio)
 - ✅ Async execution path (`execute_async` with thread offloading for sync providers)
+- ✅ Template engine with filters, conditionals, loops
+- ✅ Hooks/middleware pipeline (before/after execution)
+- ✅ Observability (tracing, Prometheus metrics, alert rules)
+- ✅ Typer CLI (8 commands) + Streamlit web UI
 - ⚠️ **Pending:** Distributed rate limiting for multi-instance deployments
 - ⚠️ **Pending:** Injection detection beyond regex (lightweight classifier for paraphrased attacks)
 

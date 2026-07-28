@@ -9,8 +9,14 @@ from .config import (
     FeedbackConfig, SessionConfig, ProviderType, LogLevel,
     create_dev_config, create_production_config,
 )
-from .providers import LLMProvider, ProviderResult, ProviderFactory, ProviderRegistry
+from .providers import (
+    LLMProvider, ProviderResult, ProviderFactory, ProviderRegistry,
+    OpenAIProvider, AnthropicProvider, GoogleProvider, MistralProvider, OllamaProvider,
+)
 from .session import Session, SessionManager, Message
+from .core.template_engine import Template, TemplateRegistry, template_registry
+from .hooks import HooksManager, hooks_manager, BaseHook, LoggingHook, TimingHook, ValidationHook, AuditHook, RateLimitHook, SecurityHook
+from .observability import Tracer, tracer, MetricsCollector, metrics, AlertManager, alert_manager, AlertRule, Span
 
 try:
     from .feedback import FeedbackLoop, PromptOutcome
@@ -25,7 +31,12 @@ __all__ = [
     "ProviderType", "LogLevel",
     "create_dev_config", "create_production_config",
     "LLMProvider", "ProviderResult", "ProviderFactory", "ProviderRegistry",
+    "OpenAIProvider", "AnthropicProvider", "GoogleProvider", "MistralProvider", "OllamaProvider",
     "Session", "SessionManager", "Message",
+    "Template", "TemplateRegistry", "template_registry",
+    "HooksManager", "hooks_manager", "BaseHook",
+    "LoggingHook", "TimingHook", "ValidationHook", "AuditHook", "RateLimitHook", "SecurityHook",
+    "Tracer", "tracer", "MetricsCollector", "metrics", "AlertManager", "alert_manager", "AlertRule", "Span",
 ]
 
 if _feedback_available:
