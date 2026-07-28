@@ -33,9 +33,9 @@ if "config_path" not in st.session_state:
 # --- provider env var mapping -----------------------------------------------
 
 PROVIDER_ENV_VARS = {
-    "Anthropic": "ANTHROPIC_API_KEY",
-    "OpenAI": "OPENAI_API_KEY",
     "Gemini": "GEMINI_API_KEY",
+    "OpenAI": "OPENAI_API_KEY",
+    "Anthropic": "ANTHROPIC_API_KEY",
     "Mistral": "MISTRAL_API_KEY",
     "Azure OpenAI": "AZURE_OPENAI_API_KEY",
     "Ollama": "OLLAMA_HOST",
@@ -44,6 +44,8 @@ PROVIDER_ENV_VARS = {
 
 
 def _set_api_key(provider: str, key: str):
+    for env_var in PROVIDER_ENV_VARS.values():
+        os.environ.pop(env_var, None)
     env_var = PROVIDER_ENV_VARS.get(provider)
     if env_var and key:
         os.environ[env_var] = key
