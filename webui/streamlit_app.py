@@ -30,22 +30,48 @@ if "messages" not in st.session_state:
 if "config_path" not in st.session_state:
     st.session_state.config_path = "agent.brompt.yaml"
 
+# --- provider env var mapping -----------------------------------------------
+
+PROVIDER_ENV_VARS = {
+    "Anthropic": "ANTHROPIC_API_KEY",
+    "OpenAI": "OPENAI_API_KEY",
+    "Gemini": "GEMINI_API_KEY",
+    "Mistral": "MISTRAL_API_KEY",
+    "Azure OpenAI": "AZURE_OPENAI_API_KEY",
+    "Ollama": "OLLAMA_HOST",
+    "LM Studio": "LM_STUDIO_HOST",
+}
+
+
+def _set_api_key(provider: str, key: str):
+    env_var = PROVIDER_ENV_VARS.get(provider)
+    if env_var and key:
+        os.environ[env_var] = key
+
+
 # --- sidebar ----------------------------------------------------------------
 
 with st.sidebar:
     st.title("⚡ Brompt Engine")
     st.caption("Deterministic State-Driven LLM Orchestration")
 
+    with st.expander("API Key", expanded=not bool(st.session_state.engine)):
+        provider_sel = st.selectbox("Provider", list(PROVIDER_ENV_VARS.keys()), key="provider_sel")
+        api_key = st.text_input("Key / Host", type="password", key="api_key_input",
+                                help=f"Sets {PROVIDER_ENV_VARS.get(provider_sel, '')}")
+
     config_path = st.text_input("Config path", value=st.session_state.config_path)
 
     if st.button("🔄 Initialize Engine", use_container_width=True):
+        _set_api_key(provider_sel, api_key)
         try:
             engine = BromptEngine(config_path)
             hooks_manager.register(LoggingHook())
             hooks_manager.register(TimingHook())
             st.session_state.engine = engine
             st.session_state.config_path = config_path
-            st.success(f"Engine initialized: {type(engine.provider).__name__ if engine.provider else 'dry-run'}")
+            provider_name = type(engine.provider).__name__ if engine.provider else "dry-run"
+            st.success(f"Engine initialized: {provider_name}")
         except Exception as exc:
             st.error(f"Failed to initialize: {exc}")
 
@@ -84,6 +110,10 @@ with col1:
             st.markdown(prompt)
 
         if not st.session_state.engine:
+            _set_api_key(
+                st.session_state.get("provider_sel", "Gemini"),
+                st.session_state.get("api_key_input", ""),
+            )
             try:
                 engine = BromptEngine(st.session_state.config_path)
                 hooks_manager.register(LoggingHook())
