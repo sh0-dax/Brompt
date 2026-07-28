@@ -1,8 +1,6 @@
 """Brompt Web UI — Streamlit-based interface for the Brompt Engine."""
 
-import os
 import sys
-import json
 from pathlib import Path
 
 import streamlit as st
@@ -11,8 +9,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from brompt.core.engine import BromptEngine
 from brompt.hooks import hooks_manager, LoggingHook, TimingHook
-from brompt.observability import metrics, tracer
+from brompt.observability import metrics
 from brompt.core.template_engine import template_registry
+from brompt._providers_legacy import (
+    AnthropicProvider, OpenAIProvider, GeminiProvider,
+    MistralProvider, AzureOpenAIProvider, OllamaProvider, LMStudioProvider,
+)
 
 st.set_page_config(
     page_title="Brompt Engine",
@@ -30,26 +32,24 @@ if "messages" not in st.session_state:
 if "config_path" not in st.session_state:
     st.session_state.config_path = "agent.brompt.yaml"
 
-# --- provider env var mapping -----------------------------------------------
-
-PROVIDER_ENV_VARS = {
-    "Gemini": "GEMINI_API_KEY",
-    "OpenAI": "OPENAI_API_KEY",
-    "Anthropic": "ANTHROPIC_API_KEY",
-    "Mistral": "MISTRAL_API_KEY",
-    "Azure OpenAI": "AZURE_OPENAI_API_KEY",
-    "Ollama": "OLLAMA_HOST",
-    "LM Studio": "LM_STUDIO_HOST",
+PROVIDER_FACTORIES = {
+    "Gemini": lambda key: GeminiProvider(api_key=key, model="gemini-2.5-flash"),
+    "OpenAI": lambda key: OpenAIProvider(api_key=key, model="gpt-4o"),
+    "Anthropic": lambda key: AnthropicProvider(api_key=key, model="claude-sonnet-4-5"),
+    "Mistral": lambda key: MistralProvider(api_key=key, model="mistral-large-latest"),
+    "Azure OpenAI": lambda key: AzureOpenAIProvider(api_key=key, model="gpt-4o"),
+    "Ollama": lambda host: OllamaProvider(base_url=host or "http://localhost:11434", model="llama3.2"),
+    "LM Studio": lambda host: LMStudioProvider(base_url=host or "http://localhost:1234", model="default"),
 }
-
-
-def _set_api_key(provider: str, key: str):
-    for env_var in PROVIDER_ENV_VARS.values():
-        os.environ.pop(env_var, None)
-    env_var = PROVIDER_ENV_VARS.get(provider)
-    if env_var and key:
-        os.environ[env_var] = key
-
+HELP_TEXT = {
+    "Gemini": "Gemini API key (GEMINI_API_KEY)",
+    "OpenAI": "OpenAI API key (OPENAI_API_KEY)",
+    "Anthropic": "Anthropic API key (ANTHROPIC_API_KEY)",
+    "Mistral": "Mistral API key (MISTRAL_API_KEY)",
+    "Azure OpenAI": "Azure OpenAI API key (AZURE_OPENAI_API_KEY)",
+    "Ollama": "Ollama base URL (default: http://localhost:11434)",
+    "LM Studio": "LM Studio base URL (default: http://localhost:1234)",
+}
 
 # --- sidebar ----------------------------------------------------------------
 
@@ -58,21 +58,17 @@ with st.sidebar:
     st.caption("Deterministic State-Driven LLM Orchestration")
 
     with st.expander("API Key", expanded=not bool(st.session_state.engine)):
-        provider_sel = st.selectbox("Provider", list(PROVIDER_ENV_VARS.keys()), key="provider_sel")
+        provider_sel = st.selectbox("Provider", list(PROVIDER_FACTORIES.keys()), key="provider_sel")
         api_key = st.text_input("Key / Host", type="password", key="api_key_input",
-                                help=f"Sets {PROVIDER_ENV_VARS.get(provider_sel, '')}")
+                                help=HELP_TEXT.get(provider_sel, ""))
 
     config_path = st.text_input("Config path", value=st.session_state.config_path)
 
     if st.button("🔄 Initialize Engine", use_container_width=True):
-        _set_api_key(provider_sel, api_key)
-        env_var = PROVIDER_ENV_VARS.get(provider_sel, "?")
-        st.write(f"DEBUG: selected=`{provider_sel}`, env_var=`{env_var}`, value=`{os.environ.get(env_var, '')[:8]}...`")
         try:
-            from brompt._providers_legacy import build_provider_from_env
-            p = build_provider_from_env()
-            st.write(f"DEBUG: build_provider_from_env() -> {type(p).__name__ if p else 'None'}")
-            engine = BromptEngine(config_path)
+            factory = PROVIDER_FACTORIES.get(provider_sel)
+            provider = factory(api_key) if factory else None
+            engine = BromptEngine(config_path, provider=provider)
             hooks_manager.register(LoggingHook())
             hooks_manager.register(TimingHook())
             st.session_state.engine = engine
@@ -117,12 +113,12 @@ with col1:
             st.markdown(prompt)
 
         if not st.session_state.engine:
-            _set_api_key(
-                st.session_state.get("provider_sel", "Gemini"),
-                st.session_state.get("api_key_input", ""),
-            )
+            sel = st.session_state.get("provider_sel", "Gemini")
+            key = st.session_state.get("api_key_input", "")
+            factory = PROVIDER_FACTORIES.get(sel)
             try:
-                engine = BromptEngine(st.session_state.config_path)
+                provider = factory(key) if factory else None
+                engine = BromptEngine(st.session_state.config_path, provider=provider)
                 hooks_manager.register(LoggingHook())
                 hooks_manager.register(TimingHook())
                 st.session_state.engine = engine
