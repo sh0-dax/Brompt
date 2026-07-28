@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -77,6 +78,8 @@ class BromptEngine:
             audit_log_path or str(manifest_file.parent / f"{manifest_file.stem}.audit.log")
         )
         self.state_id = f"state_{uuid.uuid4().hex[:8]}"
+        self._last_latency_ms = 0.0
+        self._last_tokens_used = 0
 
     # -- shared pipeline steps -------------------------------------------------
 
@@ -132,7 +135,8 @@ class BromptEngine:
             event, msg = "internal_error", f"Internal engine error: {type(err).__name__}"
         if event in ("rate_limited", "security_violation"):
             logger.warning("%s blocked execution: %s", event, err)
-        self.audit.record(event, self.state_id, False, str(err))
+        self.audit.record(event, self.state_id, False, str(err),
+                          latency_ms=0.0, tokens_used=0)
         return ExecutionResult(state_id=self.state_id, is_secure=False, data={}, error_message=msg)
 
     # -- synchronous path -------------------------------------------------------
@@ -151,16 +155,20 @@ class BromptEngine:
         except Exception as err:
             return self._handle_rejection(err)
 
+        reply = None
         if self.provider is not None:
             try:
+                t0 = time.time()
                 reply = self.provider.generate(self.memory.get_history(), system=system_prompt)
+                self._last_latency_ms = (time.time() - t0) * 1000
                 reply = SecurityEngine.sanitize_output(reply)
                 self.memory.add_turn("assistant", reply)
                 output_payload["llm_response"] = reply
                 output_payload["provider_used"] = True
             except ProviderError as err:
                 logger.error("Provider call failed: %s", err)
-                self.audit.record("provider_error", self.state_id, False, str(err))
+                self.audit.record("provider_error", self.state_id, False, str(err),
+                                  latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used)
                 return ExecutionResult(
                     state_id=self.state_id,
                     is_secure=False,
@@ -168,7 +176,9 @@ class BromptEngine:
                     error_message=f"Provider error: {err}",
                 )
 
-        self.audit.record("execute", self.state_id, True)
+        self._last_tokens_used = len(reply) // 4 if reply else 0
+        self.audit.record("execute", self.state_id, True,
+                          latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used)
         return ExecutionResult(state_id=self.state_id, is_secure=True, data=output_payload)
 
     # -- asynchronous path --------------------------------------------------
@@ -186,16 +196,18 @@ class BromptEngine:
             return self._handle_rejection(err)
 
         history = self.memory.get_history()
+        reply = None
         try:
+            t0 = time.time()
             if self.async_provider is not None:
                 reply = await self.async_provider.agenerate(history, system=system_prompt)
             elif self.provider is not None:
                 reply = await asyncio.to_thread(self.provider.generate, history, system_prompt)
-            else:
-                reply = None
+            self._last_latency_ms = (time.time() - t0) * 1000 if reply else 0.0
         except ProviderError as err:
             logger.error("Provider call failed: %s", err)
-            self.audit.record("provider_error", self.state_id, False, str(err))
+            self.audit.record("provider_error", self.state_id, False, str(err),
+                              latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used)
             return ExecutionResult(
                 state_id=self.state_id,
                 is_secure=False,
@@ -209,5 +221,7 @@ class BromptEngine:
             output_payload["llm_response"] = reply
             output_payload["provider_used"] = True
 
-        self.audit.record("execute", self.state_id, True)
+        self._last_tokens_used = len(reply) // 4 if reply else 0
+        self.audit.record("execute", self.state_id, True,
+                          latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used)
         return ExecutionResult(state_id=self.state_id, is_secure=True, data=output_payload)

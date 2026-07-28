@@ -45,6 +45,8 @@ class AuditLog:
         state_id: str,
         is_secure: bool,
         detail: str | None = None,
+        latency_ms: float | None = None,
+        tokens_used: int | None = None,
     ) -> dict[str, Any]:
         """Appends one tamper-evident record. No update/delete by design."""
         with self._lock:
@@ -55,6 +57,8 @@ class AuditLog:
                 "state_id": state_id,
                 "is_secure": is_secure,
                 "detail": detail,
+                "latency_ms": latency_ms,
+                "tokens_used": tokens_used,
                 "prev_hash": prev_hash,
             }
             entry_hash = self._hash_entry(prev_hash, payload)

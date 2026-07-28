@@ -1,20 +1,14 @@
 metadata:
-  name: "ProductionAgentEngine"
-  version: "0.1.0-alpha"
-  environment: "production"
-
+  name: DefaultAgent
+  version: 0.1.0-alpha
+  environment: production
 security_policy:
-  isolation_level: "ZERO_TRUST"
+  isolation_level: ZERO_TRUST
   sanitize_inputs: true
   max_payload_size_kb: 64
-
 memory_strategy:
-  paging_mode: "VIRTUAL_STATE_O1"
-  max_history_turns: 3
-
+  paging_mode: VIRTUAL_STATE_O1
+  max_history_turns: 10
 rate_limit:
   max_requests: 30
   window_seconds: 60
-
-schema_validation:
-  strict_mode: true
