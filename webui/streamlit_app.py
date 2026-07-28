@@ -83,26 +83,33 @@ with col1:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        if st.session_state.engine:
-            with st.chat_message("assistant"):
-                with st.spinner("Processing..."):
-                    try:
-                        query, ctx = hooks_manager.before_execute(prompt, None)
-                        result = st.session_state.engine.execute(query, ctx)
-                        result = hooks_manager.after_execute(result)
-                        if result.is_secure:
-                            response = result.data.get("llm_response", "")
-                            if response:
-                                st.markdown(response)
-                                st.session_state.messages.append({"role": "assistant", "content": response})
-                            else:
-                                st.info("No response (dry-run mode)")
+        if not st.session_state.engine:
+            try:
+                engine = BromptEngine(st.session_state.config_path)
+                hooks_manager.register(LoggingHook())
+                hooks_manager.register(TimingHook())
+                st.session_state.engine = engine
+            except Exception as exc:
+                st.error(f"Cannot auto-init engine: {exc}")
+                st.stop()
+
+        with st.chat_message("assistant"):
+            with st.spinner("Processing..."):
+                try:
+                    query, ctx = hooks_manager.before_execute(prompt, None)
+                    result = st.session_state.engine.execute(query, ctx)
+                    result = hooks_manager.after_execute(result)
+                    if result.is_secure:
+                        response = result.data.get("llm_response", "")
+                        if response:
+                            st.markdown(response)
+                            st.session_state.messages.append({"role": "assistant", "content": response})
                         else:
-                            st.error(f"Error: {result.error_message}")
-                    except Exception as exc:
-                        st.error(f"Error: {exc}")
-        else:
-            st.info("Initialize the engine from the sidebar first.")
+                            st.info("No response (dry-run mode)")
+                    else:
+                        st.error(f"Error: {result.error_message}")
+                except Exception as exc:
+                    st.error(f"Error: {exc}")
 
 with col2:
     st.subheader("📊 Metrics")
