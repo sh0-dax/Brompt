@@ -193,8 +193,7 @@ with col2:
                 col_a.metric("Messages", len(df))
                 col_b.metric("Avg Latency", f"{df['latency_ms'].mean():.0f}ms")
                 st.bar_chart(df[["latency_ms", "tokens"]], height=200)
-                with st.expander("Raw Data", expanded=False):
-                    st.dataframe(df[["msg", "latency_ms", "tokens", "secure"]], use_container_width=True)
+                st.caption(f"Last: {history[-1]['msg']} — {history[-1]['latency_ms']:.0f}ms, {history[-1]['tokens']} tokens")
             else:
                 st.caption("No executions yet")
 
