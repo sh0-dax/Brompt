@@ -317,15 +317,10 @@ class BromptWidget:
 
                 content += f"\n  Updated: {time.strftime('%H:%M:%S')}\n"
 
-                # Feed chart samples — heartbeat animation when idle
-                self._hb = (self._hb + 1) % 20
-                hb_sec = sec_count + max(0, 4 - self._hb)
-                hb_rej = rej_count + max(0, min(self._hb, 2))
-                hb_lat = avg_lat or self._hb * 5
-                hb_tok = avg_tok or self._hb * 2
-                sample = (hb_sec, hb_rej, hb_lat, hb_tok)
+                # Feed chart samples — only from real engine data
+                sample = (sec_count, rej_count, avg_lat, avg_tok)
                 if not self.chart_engine.samples or self.chart_engine.samples[-1] != sample:
-                    self.chart_engine.add_sample(hb_sec, hb_rej, hb_lat, hb_tok)
+                    self.chart_engine.add_sample(sec_count, rej_count, avg_lat, avg_tok)
 
                 if self._active_tab == "chart":
                     self.chart_engine.draw(self.content["chart_canvas"])

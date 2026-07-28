@@ -1,74 +1,92 @@
-"""Google Gemini provider — async-compatible LLM provider."""
+"""Google Gemini provider — async provider using google-genai SDK."""
 
-import logging
-from typing import Any
+import time
+from typing import Optional, AsyncIterator
 
-from .base import LLMProvider
-logger = logging.getLogger("brompt.providers.google")
+from .base import LLMProvider, ProviderResult, ProviderOutcome
 
 
 class GoogleProvider(LLMProvider):
-    """Google Gemini provider."""
-
-    def __init__(self, model: str = "gemini-2.0-flash", api_key: str | None = None):
-        self.model = model
-        self.api_key = api_key
-        self._client = None
-
-    def _ensure_client(self):
-        if self._client is not None:
-            return
+    def _setup_client(self):
         try:
             from google import genai
-            self._client = genai.Client(api_key=self.api_key) if self.api_key else genai.Client()
+            from google.genai import types
+            self._types = types
+            self._sync_client = genai.Client(api_key=self.api_key)
+            self._client = self._sync_client.aio
         except ImportError:
-            raise ImportError("google-genai not installed. Install with: pip install brompt-engine[gemini]")
-        except Exception as exc:
-            logger.error("Failed to init Google client: %s", exc)
-            raise
+            raise ImportError("pip install google-genai")
+        except Exception as e:
+            raise RuntimeError(f"Gemini client init failed: {e}")
 
-    def generate(self, messages: list[dict], system: str | None = None, **kwargs) -> str:
-        self._ensure_client()
+    async def generate(self, prompt: str, **kwargs) -> ProviderResult:
+        start_time = time.time()
         try:
-            contents = []
-            for msg in messages:
-                role = "model" if msg["role"] == "assistant" else "user"
-                contents.append({"role": role, "parts": [{"text": msg["content"]}]})
-            config = {"temperature": kwargs.get("temperature", 0.7)}
+            config = {
+                "temperature": kwargs.get("temperature", 0.7),
+                "max_output_tokens": kwargs.get("max_tokens", 4096),
+                "top_p": kwargs.get("top_p", 1.0),
+            }
+            system = kwargs.get("system")
             if system:
-                config["system_instruction"] = system
-            response = self._client.models.generate_content(
+                response = await self._client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                    config=self._types.GenerateContentConfig(
+                        system_instruction=system,
+                        temperature=config["temperature"],
+                        max_output_tokens=config["max_output_tokens"],
+                    ),
+                )
+            else:
+                response = await self._client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                )
+            latency_ms = (time.time() - start_time) * 1000
+            text = response.text or ""
+            usage = response.usage_metadata
+            return ProviderResult(
+                text=text,
                 model=self.model,
-                contents=contents,
-                config=config,
+                outcome=ProviderOutcome.SUCCESS,
+                tokens_used=usage.total_token_count if usage else 0,
+                prompt_tokens=usage.prompt_token_count if usage else 0,
+                completion_tokens=usage.candidates_token_count if usage else 0,
+                latency_ms=latency_ms,
+                finish_reason="stop",
             )
-            return response.text
-        except Exception as exc:
-            logger.error("Google generation failed: %s", exc)
-            raise
+        except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
+            error_str = str(e).lower()
+            if "rate_limit" in error_str:
+                outcome = ProviderOutcome.RATE_LIMITED
+            elif "content_filter" in error_str:
+                outcome = ProviderOutcome.CONTENT_FILTERED
+            elif "timeout" in error_str:
+                outcome = ProviderOutcome.TIMEOUT
+            else:
+                outcome = ProviderOutcome.ERROR
+            return ProviderResult(
+                text="", model=self.model, outcome=outcome,
+                latency_ms=latency_ms, error=str(e),
+            )
 
-    async def agenerate(self, messages: list[dict], system: str | None = None, **kwargs) -> str:
-        self._ensure_client()
+    async def stream(self, prompt: str, **kwargs) -> AsyncIterator[str]:
         try:
-            contents = []
-            for msg in messages:
-                role = "model" if msg["role"] == "assistant" else "user"
-                contents.append({"role": role, "parts": [{"text": msg["content"]}]})
-            config = {"temperature": kwargs.get("temperature", 0.7)}
-            if system:
-                config["system_instruction"] = system
-            response = await self._client.aio.models.generate_content(
+            response = await self._client.models.generate_content_stream(
                 model=self.model,
-                contents=contents,
-                config=config,
+                contents=prompt,
             )
-            return response.text
-        except Exception as exc:
-            logger.error("Google async generation failed: %s", exc)
-            raise
+            async for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+        except Exception as e:
+            yield f"[Error: {e}]"
 
-    @property
-    def model_name(self) -> str:
-        return self.model
-
-
+    async def validate_api_key(self) -> bool:
+        try:
+            await self._client.models.list()
+            return True
+        except Exception:
+            return False

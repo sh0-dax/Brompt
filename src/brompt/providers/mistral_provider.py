@@ -1,73 +1,87 @@
-"""Mistral AI provider — async-compatible LLM provider."""
+"""Mistral AI provider — async provider using mistralai SDK."""
 
-import logging
-from typing import Any
+import time
+from typing import Optional, AsyncIterator
 
-from .base import LLMProvider
-
-logger = logging.getLogger("brompt.providers.mistral")
+from .base import LLMProvider, ProviderResult, ProviderOutcome
 
 
 class MistralProvider(LLMProvider):
-    """Mistral AI provider."""
-
-    def __init__(self, model: str = "mistral-large-latest", api_key: str | None = None):
-        self.model = model
-        self.api_key = api_key
-        self._client = None
-
-    def _ensure_client(self):
-        if self._client is not None:
-            return
+    def _setup_client(self):
         try:
             from mistralai import Mistral
-            self._client = Mistral(api_key=self.api_key) if self.api_key else Mistral()
+            self._client = Mistral(api_key=self.api_key)
         except ImportError:
-            raise ImportError("mistralai not installed. Install with: pip install brompt-engine[mistral]")
-        except Exception as exc:
-            logger.error("Failed to init Mistral client: %s", exc)
-            raise
+            raise ImportError("pip install mistralai")
+        except Exception as e:
+            raise RuntimeError(f"Mistral client init failed: {e}")
 
-    def generate(self, messages: list[dict], system: str | None = None, **kwargs) -> str:
-        self._ensure_client()
+    async def generate(self, prompt: str, **kwargs) -> ProviderResult:
+        start_time = time.time()
         try:
-            msgs = []
+            msgs = [{"role": "user", "content": prompt}]
+            system = kwargs.get("system")
             if system:
-                msgs.append({"role": "system", "content": system})
-            for msg in messages:
-                msgs.append({"role": msg["role"], "content": msg["content"]})
-            response = self._client.chat.complete(
-                model=self.model,
-                messages=msgs,
-                temperature=kwargs.get("temperature", 0.7),
-                max_tokens=kwargs.get("max_tokens", 4096),
-            )
-            return response.choices[0].message.content
-        except Exception as exc:
-            logger.error("Mistral generation failed: %s", exc)
-            raise
-
-    async def agenerate(self, messages: list[dict], system: str | None = None, **kwargs) -> str:
-        self._ensure_client()
-        try:
-            msgs = []
-            if system:
-                msgs.append({"role": "system", "content": system})
-            for msg in messages:
-                msgs.append({"role": msg["role"], "content": msg["content"]})
+                msgs.insert(0, {"role": "system", "content": system})
             response = await self._client.chat.complete_async(
                 model=self.model,
                 messages=msgs,
                 temperature=kwargs.get("temperature", 0.7),
                 max_tokens=kwargs.get("max_tokens", 4096),
+                top_p=kwargs.get("top_p", 1.0),
             )
-            return response.choices[0].message.content
-        except Exception as exc:
-            logger.error("Mistral async generation failed: %s", exc)
-            raise
+            latency_ms = (time.time() - start_time) * 1000
+            choice = response.choices[0]
+            usage = response.usage
+            return ProviderResult(
+                text=choice.message.content or "",
+                model=self.model,
+                outcome=ProviderOutcome.SUCCESS,
+                tokens_used=usage.total_tokens if usage else 0,
+                prompt_tokens=usage.prompt_tokens if usage else 0,
+                completion_tokens=usage.completion_tokens if usage else 0,
+                latency_ms=latency_ms,
+                finish_reason=choice.finish_reason,
+            )
+        except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
+            error_str = str(e).lower()
+            if "rate_limit" in error_str:
+                outcome = ProviderOutcome.RATE_LIMITED
+            elif "content_filter" in error_str:
+                outcome = ProviderOutcome.CONTENT_FILTERED
+            elif "timeout" in error_str:
+                outcome = ProviderOutcome.TIMEOUT
+            else:
+                outcome = ProviderOutcome.ERROR
+            return ProviderResult(
+                text="", model=self.model, outcome=outcome,
+                latency_ms=latency_ms, error=str(e),
+            )
 
-    @property
-    def model_name(self) -> str:
-        return self.model
+    async def stream(self, prompt: str, **kwargs) -> AsyncIterator[str]:
+        try:
+            msgs = [{"role": "user", "content": prompt}]
+            system = kwargs.get("system")
+            if system:
+                msgs.insert(0, {"role": "system", "content": system})
+            stream = await self._client.chat.stream_async(
+                model=self.model,
+                messages=msgs,
+                temperature=kwargs.get("temperature", 0.7),
+                max_tokens=kwargs.get("max_tokens", 4096),
+            )
+            async for chunk in stream:
+                if chunk.data.choices[0].delta.content:
+                    yield chunk.data.choices[0].delta.content
+        except Exception as e:
+            yield f"[Error: {e}]"
 
-
+    async def validate_api_key(self) -> bool:
+        try:
+            await self._client.chat.complete_async(
+                model=self.model, messages=[{"role": "user", "content": "hi"}], max_tokens=1
+            )
+            return True
+        except Exception:
+            return False
