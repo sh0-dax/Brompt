@@ -9,7 +9,7 @@ MUTED = "#8b949e"
 CYAN = "#58a6ff"
 GREEN = "#3fb950"
 RED = "#f85149"
-YELLOW = "#d29922"
+YELLOW = "#e3b341"
 PURPLE = "#bc8cff"
 
 WIDTH = 260
