@@ -116,9 +116,13 @@ class BromptWidget:
         self.live_mode = live_mode
         self.engine = None
         self._stop = False
+        self.badge = None
 
         self._build_ui()
         self._bind_drag()
+
+        # X button hides to badge instead of destroying
+        self.root.protocol("WM_DELETE_WINDOW", self._hide_to_badge)
 
         if live_mode:
             self._connect_engine()
@@ -153,7 +157,7 @@ class BromptWidget:
         self.close_btn = tk.Button(
             btn_frame, text="✕", bg=BG_HEADER, fg=MUTED,
             bd=0, activebackground=RED, activeforeground=TEXT,
-            font=("Consolas", 12), width=3, command=self._toggle_mini,
+            font=("Consolas", 12), width=3, command=self._hide_to_badge,
         )
         self.close_btn.pack(side=tk.LEFT)
 
@@ -260,50 +264,80 @@ class BromptWidget:
         self.root.geometry(f"+{x}+{y}")
 
     # ------------------------------------------------------------------
-    # Minimize / restore
+    # Minimize to floating badge / restore
     # ------------------------------------------------------------------
     def _toggle_mini(self):
         if self.is_mini:
             self._restore()
         else:
-            self._minimise()
+            self._hide_to_badge()
 
-    def _minimise(self):
+    def _hide_to_badge(self):
+        """Withdraw main window, show a small floating 'B' badge."""
         self.normal_geometry = self.root.geometry()
-        sx = self.root.winfo_screenwidth()
-        sy = self.root.winfo_screenheight()
-        self.root.geometry(f"{MINI_SIZE}x{MINI_SIZE}+{sx - MINI_SIZE - 15}+{sy - MINI_SIZE - 50}")
-        # Hide all children except title
-        for w in self.root.winfo_children():
-            if w != self.title_frame:
-                w.pack_forget()
-        self.title_frame.pack_forget()
+        self.root.withdraw()
 
-        # Mini badge
-        self.mini_frame = tk.Frame(self.root, bg=CYAN, cursor="hand2")
-        self.mini_frame.pack(fill=tk.BOTH, expand=True)
-        self.mini_label = tk.Label(
-            self.mini_frame, text="B", bg=CYAN, fg="#000000",
-            font=("Consolas", 18, "bold"),
+        # Floating badge window
+        self.badge = tk.Toplevel(self.root)
+        self.badge.overrideredirect(True)
+        self.badge.attributes("-topmost", True)
+        self.badge.configure(bg=CYAN)
+        self.badge.geometry(f"{MINI_SIZE}x{MINI_SIZE}")
+
+        # Position bottom-right
+        sx = self.badge.winfo_screenwidth()
+        sy = self.badge.winfo_screenheight()
+        self.badge.geometry(f"+{sx - MINI_SIZE - 15}+{sy - MINI_SIZE - 50}")
+
+        # Badge label
+        self.badge_label = tk.Label(
+            self.badge, text="B", bg=CYAN, fg="#000000",
+            font=("Consolas", 18, "bold"), cursor="hand2",
         )
-        self.mini_label.pack(expand=True)
-        self.mini_frame.bind("<Button-1>", lambda e: self._restore())
-        self.mini_label.bind("<Button-1>", lambda e: self._restore())
+        self.badge_label.pack(expand=True, fill=tk.BOTH)
+
+        # Left-click → restore
+        self.badge.bind("<Button-1>", self._restore_from_badge)
+        self.badge_label.bind("<Button-1>", self._restore_from_badge)
+
+        # Right-click → context menu
+        self.badge_menu = tk.Menu(self.badge, tearoff=0, bg=BG_CARD, fg=TEXT,
+                                  activebackground=CYAN, activeforeground="#000000",
+                                  font=("Consolas", 10))
+        self.badge_menu.add_command(label="Restore", command=self._restore)
+        self.badge_menu.add_separator()
+        self.badge_menu.add_command(label="Quit", command=self._quit)
+
+        self.badge.bind("<Button-3>", self._show_badge_menu)
+        self.badge_label.bind("<Button-3>", self._show_badge_menu)
+
+        # Drag badge
+        self.badge.bind("<B1-Motion>", self._drag_badge)
+        self.badge_label.bind("<B1-Motion>", self._drag_badge)
 
         self.is_mini = True
 
+    def _show_badge_menu(self, event):
+        self.badge_menu.tk_popup(event.x_root, event.y_root)
+
+    def _restore_from_badge(self, event=None):
+        self._restore()
+
     def _restore(self):
-        if hasattr(self, "mini_frame"):
-            self.mini_frame.destroy()
-        self.title_frame.pack(fill=tk.X)
+        """Destroy badge, show main window."""
+        if hasattr(self, "badge") and self.badge:
+            self.badge.destroy()
+            self.badge = None
+        self.root.deiconify()
         if self.normal_geometry:
             self.root.geometry(self.normal_geometry)
-        # Re-show tab bar and content
-        self.tab_frame.pack(fill=tk.X)
-        tk.Frame(self.root, bg=BORDER, height=1).pack(fill=tk.X)
-        self.content_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
-        self._show_tab("live" if self.live_mode else "docs")
         self.is_mini = False
+
+    def _quit(self):
+        self._stop = True
+        if hasattr(self, "badge") and self.badge:
+            self.badge.destroy()
+        self.root.destroy()
 
     # ------------------------------------------------------------------
     # Engine connection + live refresh
