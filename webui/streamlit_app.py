@@ -139,14 +139,18 @@ with col1:
                     completion_tokens = engine._last_tokens_used
                     all_text = " ".join(m["content"] for m in engine.memory.get_history())
                     prompt_tokens = len(all_text) // 4
+                    plain_prompt_tokens = len(prompt) // 4
                     provider_name = type(engine.provider).__name__ if engine.provider else "None"
                     cost = estimate_cost(provider_name, prompt_tokens, completion_tokens)
+                    plain_cost = estimate_cost(provider_name, plain_prompt_tokens, completion_tokens)
                     st.session_state.execution_history.append({
                         "msg": prompt[:30],
                         "latency_ms": engine._last_latency_ms,
                         "tokens": completion_tokens,
                         "prompt_tokens": prompt_tokens,
+                        "plain_prompt_tokens": plain_prompt_tokens,
                         "cost": cost,
+                        "plain_cost": plain_cost,
                         "secure": result.is_secure,
                         "provider_used": result.data.get("provider_used", False),
                     })
@@ -163,7 +167,8 @@ with col1:
                     st.error(f"Error: {exc}")
                     st.session_state.execution_history.append({
                         "msg": prompt[:30], "latency_ms": 0,
-                        "tokens": 0, "prompt_tokens": 0, "cost": 0.0,
+                        "tokens": 0, "prompt_tokens": 0, "plain_prompt_tokens": 0,
+                        "cost": 0.0, "plain_cost": 0.0,
                         "secure": False, "provider_used": False,
                     })
 
@@ -201,13 +206,21 @@ with col2:
                 col_a, col_b, col_c = st.columns(3)
                 col_a.metric("Messages", len(df))
                 col_b.metric("Avg Latency", f"{df['latency_ms'].mean():.0f}ms")
-                col_c.metric("Total Cost", f"${df['cost'].sum():.4f}")
+                total_overhead = df["cost"].sum() - df["plain_cost"].sum()
+                pct = (total_overhead / df["cost"].sum() * 100) if df["cost"].sum() > 0 else 0
+                col_c.metric("Total Cost", f"${df['cost'].sum():.4f}", delta=f"{pct:.0f}% overhead")
                 st.bar_chart(df[["latency_ms", "tokens"]], height=200)
                 last = history[-1]
+                overhead_tokens = last["prompt_tokens"] - last["plain_prompt_tokens"]
+                overhead_cost = last["cost"] - last["plain_cost"]
                 st.caption(
                     f"Last: {last['msg']} — {last['latency_ms']:.0f}ms, "
                     f"{last['prompt_tokens']} in / {last['tokens']} out, "
                     f"${last['cost']:.6f}"
+                )
+                st.caption(
+                    f"🧾 Prompt ${last['plain_cost']:.6f} + "
+                    f"Overhead {overhead_tokens} tok ${overhead_cost:.6f}"
                 )
             else:
                 st.caption("No executions yet")

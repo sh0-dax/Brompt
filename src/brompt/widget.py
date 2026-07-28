@@ -36,7 +36,9 @@ class PromptResult:
     tokens_used: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    plain_prompt_tokens: int = 0
     cost: float = 0.0
+    plain_cost: float = 0.0
     latency_ms: float = 0.0
     finish_reason: Optional[str] = None
     feedback_id: Optional[str] = None
@@ -51,7 +53,9 @@ class PromptResult:
             "tokens_used": self.tokens_used,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
+            "plain_prompt_tokens": self.plain_prompt_tokens,
             "cost": self.cost,
+            "plain_cost": self.plain_cost,
             "latency_ms": self.latency_ms,
             "timestamp": self.timestamp.isoformat(),
         }
@@ -181,11 +185,11 @@ class BromptWidget:
             }
             provider_result = await self._provider.generate(generated_prompt, **gen_params)
             latency_ms = (time.time() - start_time) * 1000
-            cost = estimate_cost(
-                self._provider.__class__.__name__,
-                provider_result.prompt_tokens or len(generated_prompt) // 4,
-                provider_result.completion_tokens or provider_result.tokens_used,
-            )
+            prompt_tokens = provider_result.prompt_tokens or len(generated_prompt) // 4
+            completion_tokens = provider_result.completion_tokens or provider_result.tokens_used
+            plain_prompt_tokens = len(user_input) // 4
+            cost = estimate_cost(self._provider.__class__.__name__, prompt_tokens, completion_tokens)
+            plain_cost = estimate_cost(self._provider.__class__.__name__, plain_prompt_tokens, completion_tokens)
             result = PromptResult(
                 user_input=user_input,
                 generated_prompt=generated_prompt,
@@ -194,9 +198,11 @@ class BromptWidget:
                 model=provider_result.model,
                 session_id=session_id,
                 tokens_used=provider_result.tokens_used,
-                prompt_tokens=provider_result.prompt_tokens or len(generated_prompt) // 4,
-                completion_tokens=provider_result.completion_tokens or provider_result.tokens_used,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                plain_prompt_tokens=plain_prompt_tokens,
                 cost=cost,
+                plain_cost=plain_cost,
                 latency_ms=latency_ms,
                 finish_reason=provider_result.finish_reason,
                 metadata={
@@ -216,6 +222,8 @@ class BromptWidget:
             self._stats["total_tokens"] += provider_result.tokens_used
             self._stats["total_latency_ms"] += latency_ms
             self._stats["total_cost"] += cost
+            self._stats.setdefault("total_plain_cost", 0.0)
+            self._stats["total_plain_cost"] += plain_cost
             if not provider_result.is_success:
                 self._stats["errors"] += 1
             logger.info(f"Executed: {template} | {provider_result.tokens_used} tokens | ${cost:.6f} | {latency_ms:.0f}ms")
@@ -295,6 +303,12 @@ class BromptWidget:
                 if self._stats["total_prompts"] > 0 else 0
             ),
             "total_cost": round(self._stats["total_cost"], 6),
+            "total_plain_cost": round(self._stats.get("total_plain_cost", 0.0), 6),
+            "overhead_pct": (
+                round((self._stats["total_cost"] - self._stats.get("total_plain_cost", 0.0))
+                      / self._stats["total_cost"] * 100, 1)
+                if self._stats["total_cost"] > 0 else 0.0
+            ),
             "active_sessions": self._sessions.get_total_sessions(),
             "cache_entries": len(self._cache) if self._cache else 0,
         }
