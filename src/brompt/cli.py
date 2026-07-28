@@ -100,13 +100,26 @@ def print_result(result):
         ))
 
 
+def _find_config():
+    """Search for agent.brompt.yaml in CWD and parent directories."""
+    from pathlib import Path
+    candidates = [Path.cwd(), Path(__file__).resolve().parent.parent.parent]
+    for base in candidates:
+        cfg = base / "agent.brompt.yaml"
+        if cfg.exists():
+            return str(cfg)
+    return "agent.brompt.yaml"
+
+
 def main():
     boot_animation()
 
     try:
         from brompt.core import BromptEngine
 
-        engine = BromptEngine("agent.brompt.yaml")
+        config_path = _find_config()
+        console.print(f"[dim]Config: {config_path}[/dim]\n")
+        engine = BromptEngine(config_path)
         console.print("[dim]Type [bold]exit[/bold] or [bold]quit[/bold] to stop.[/dim]\n")
 
         while True:
