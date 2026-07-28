@@ -15,6 +15,7 @@ from brompt._providers_legacy import (
     AnthropicProvider, OpenAIProvider, GeminiProvider,
     MistralProvider, AzureOpenAIProvider, OllamaProvider, LMStudioProvider,
 )
+from brompt.pricing import estimate_cost
 
 st.set_page_config(
     page_title="Brompt Engine",
@@ -135,10 +136,17 @@ with col1:
                     engine = st.session_state.engine
                     result = engine.execute(query, ctx)
                     result = hooks_manager.after_execute(result)
+                    completion_tokens = engine._last_tokens_used
+                    all_text = " ".join(m["content"] for m in engine.memory.get_history())
+                    prompt_tokens = len(all_text) // 4
+                    provider_name = type(engine.provider).__name__ if engine.provider else "None"
+                    cost = estimate_cost(provider_name, prompt_tokens, completion_tokens)
                     st.session_state.execution_history.append({
                         "msg": prompt[:30],
                         "latency_ms": engine._last_latency_ms,
-                        "tokens": engine._last_tokens_used,
+                        "tokens": completion_tokens,
+                        "prompt_tokens": prompt_tokens,
+                        "cost": cost,
                         "secure": result.is_secure,
                         "provider_used": result.data.get("provider_used", False),
                     })
@@ -155,7 +163,8 @@ with col1:
                     st.error(f"Error: {exc}")
                     st.session_state.execution_history.append({
                         "msg": prompt[:30], "latency_ms": 0,
-                        "tokens": 0, "secure": False, "provider_used": False,
+                        "tokens": 0, "prompt_tokens": 0, "cost": 0.0,
+                        "secure": False, "provider_used": False,
                     })
 
 with col2:
@@ -189,11 +198,17 @@ with col2:
                 df = pd.DataFrame(history)
                 df["idx"] = range(1, len(df) + 1)
                 df = df.set_index("idx")
-                col_a, col_b = st.columns(2)
+                col_a, col_b, col_c = st.columns(3)
                 col_a.metric("Messages", len(df))
                 col_b.metric("Avg Latency", f"{df['latency_ms'].mean():.0f}ms")
+                col_c.metric("Total Cost", f"${df['cost'].sum():.4f}")
                 st.bar_chart(df[["latency_ms", "tokens"]], height=200)
-                st.caption(f"Last: {history[-1]['msg']} — {history[-1]['latency_ms']:.0f}ms, {history[-1]['tokens']} tokens")
+                last = history[-1]
+                st.caption(
+                    f"Last: {last['msg']} — {last['latency_ms']:.0f}ms, "
+                    f"{last['prompt_tokens']} in / {last['tokens']} out, "
+                    f"${last['cost']:.6f}"
+                )
             else:
                 st.caption("No executions yet")
 

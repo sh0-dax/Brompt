@@ -12,6 +12,7 @@ from typing import Optional, AsyncIterator
 from .config import WidgetConfig, ProviderConfig, GenerationConfig, ProviderType
 from .providers import ProviderFactory, LLMProvider, ProviderResult
 from .session import Session, SessionManager, Message
+from .pricing import estimate_cost
 
 try:
     from .feedback import FeedbackLoop, PromptOutcome
@@ -33,6 +34,9 @@ class PromptResult:
     model: str
     session_id: Optional[str] = None
     tokens_used: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost: float = 0.0
     latency_ms: float = 0.0
     finish_reason: Optional[str] = None
     feedback_id: Optional[str] = None
@@ -45,6 +49,9 @@ class PromptResult:
             "template_id": self.template_id,
             "model": self.model,
             "tokens_used": self.tokens_used,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "cost": self.cost,
             "latency_ms": self.latency_ms,
             "timestamp": self.timestamp.isoformat(),
         }
@@ -118,7 +125,7 @@ class BromptWidget:
             logger.info("Feedback system initialised")
         elif self.config.feedback.enabled and not FEEDBACK_AVAILABLE:
             logger.warning("Feedback system unavailable — install brompt[feedback]")
-        self._stats = {"total_prompts": 0, "total_tokens": 0, "total_latency_ms": 0.0, "errors": 0}
+        self._stats = {"total_prompts": 0, "total_tokens": 0, "total_latency_ms": 0.0, "total_cost": 0.0, "errors": 0}
         logger.info(f"BromptWidget initialised — model: {self.config.provider.model}")
 
     def _setup_logging(self):
@@ -174,6 +181,11 @@ class BromptWidget:
             }
             provider_result = await self._provider.generate(generated_prompt, **gen_params)
             latency_ms = (time.time() - start_time) * 1000
+            cost = estimate_cost(
+                self._provider.__class__.__name__,
+                provider_result.prompt_tokens or len(generated_prompt) // 4,
+                provider_result.completion_tokens or provider_result.tokens_used,
+            )
             result = PromptResult(
                 user_input=user_input,
                 generated_prompt=generated_prompt,
@@ -182,6 +194,9 @@ class BromptWidget:
                 model=provider_result.model,
                 session_id=session_id,
                 tokens_used=provider_result.tokens_used,
+                prompt_tokens=provider_result.prompt_tokens or len(generated_prompt) // 4,
+                completion_tokens=provider_result.completion_tokens or provider_result.tokens_used,
+                cost=cost,
                 latency_ms=latency_ms,
                 finish_reason=provider_result.finish_reason,
                 metadata={
@@ -200,9 +215,10 @@ class BromptWidget:
             self._stats["total_prompts"] += 1
             self._stats["total_tokens"] += provider_result.tokens_used
             self._stats["total_latency_ms"] += latency_ms
+            self._stats["total_cost"] += cost
             if not provider_result.is_success:
                 self._stats["errors"] += 1
-            logger.info(f"Executed: {template} | {provider_result.tokens_used} tokens | {latency_ms:.0f}ms")
+            logger.info(f"Executed: {template} | {provider_result.tokens_used} tokens | ${cost:.6f} | {latency_ms:.0f}ms")
             return result
         except Exception as e:
             latency_ms = (time.time() - start_time) * 1000
@@ -278,6 +294,7 @@ class BromptWidget:
                 self._stats["total_latency_ms"] / self._stats["total_prompts"]
                 if self._stats["total_prompts"] > 0 else 0
             ),
+            "total_cost": round(self._stats["total_cost"], 6),
             "active_sessions": self._sessions.get_total_sessions(),
             "cache_entries": len(self._cache) if self._cache else 0,
         }
