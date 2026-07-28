@@ -54,6 +54,17 @@ HELP_TEXT = {
     "LM Studio": "LM Studio base URL (default: http://localhost:1234)",
 }
 
+def _fmt_cost(c: float) -> str:
+    if c >= 0.01:
+        return f"${c:.4f}"
+    if c >= 0.001:
+        return f"${c:.5f}"
+    if c >= 0.0001:
+        return f"${c:.6f}"
+    if c > 0:
+        return f"${c:.2e}"
+    return "$0.00"
+
 # --- sidebar ----------------------------------------------------------------
 
 with st.sidebar:
@@ -209,19 +220,19 @@ with col2:
                 total_overhead = df["cost"].sum() - df["plain_cost"].sum()
                 pct = (total_overhead / df["cost"].sum() * 100) if df["cost"].sum() > 0 else 0
                 total_val = df["cost"].sum()
-                col_c.metric("Total Cost", f"${total_val:.6f}", delta=f"{pct:.1f}% overhead")
+                col_c.metric("Total Cost", _fmt_cost(total_val), delta=f"{pct:.1f}% overhead")
                 st.bar_chart(df[["latency_ms", "tokens"]], height=200)
                 last = history[-1]
                 overhead_tokens = last["prompt_tokens"] - last["plain_prompt_tokens"]
                 overhead_cost = last["cost"] - last["plain_cost"]
                 st.caption(
                     f"Last: {last['msg']} — {last['latency_ms']:.0f}ms, "
-                    f"{last['prompt_tokens']} in / {last['tokens']} out, "
-                    f"${last['cost']:.6f}"
+                    f"{last['prompt_tokens']}in/{last['tokens']}out, "
+                    f"{_fmt_cost(last['cost'])} total"
                 )
                 st.caption(
-                    f"🧾 Prompt ${last['plain_cost']:.6f} + "
-                    f"Overhead {overhead_tokens} tok ${overhead_cost:.6f}"
+                    f"🧾 Prompt {_fmt_cost(last['plain_cost'])} + "
+                    f"Overhead {overhead_tokens}tok {_fmt_cost(overhead_cost)}"
                 )
             else:
                 st.caption("No executions yet")

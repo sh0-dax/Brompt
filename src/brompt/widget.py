@@ -234,6 +234,8 @@ class BromptWidget:
                 session.add_message(
                     "assistant", provider_result.text,
                     tokens_used=provider_result.tokens_used, latency_ms=latency_ms,
+                    metadata={"cost": cost, "prompt_tokens": prompt_tokens,
+                              "completion_tokens": completion_tokens},
                 )
             if self._cache and provider_result.is_success:
                 self._cache.set(user_input, template, context, result)
@@ -245,7 +247,12 @@ class BromptWidget:
             self._stats["total_plain_cost"] += plain_cost
             if not provider_result.is_success:
                 self._stats["errors"] += 1
-            logger.info(f"Executed: {template} | {provider_result.tokens_used} tokens | ${cost:.6f} | {latency_ms:.0f}ms")
+            overhead = cost - plain_cost
+            logger.info(
+                f"Executed: {template} | "
+                f"cost=${cost:.6f} (prompt=${plain_cost:.6f}+overhead=${overhead:.6f}) | "
+                f"tokens={prompt_tokens}in/{completion_tokens}out | {latency_ms:.0f}ms"
+            )
             return result
         except Exception as e:
             latency_ms = (time.time() - start_time) * 1000
