@@ -44,6 +44,15 @@ all = [
     "ollama>=0.3.0",
     "google-genai>=1.0.0",
     "mistralai>=1.0.0",
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "httpx>=0.25.0",
+]
+api = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "httpx>=0.25.0",
+    "python-multipart>=0.0.6",
 ]
 redis = [
     "redis>=5.0.0",
@@ -60,6 +69,9 @@ dev = [
     "mistralai>=1.0.0",
     "redis>=5.0.0",
     "fakeredis[lua]>=2.20.0",
+    "httpx>=0.25.0",
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
 ]
 
 [project.scripts]
