@@ -66,7 +66,12 @@ with st.sidebar:
 
     if st.button("🔄 Initialize Engine", use_container_width=True):
         _set_api_key(provider_sel, api_key)
+        env_var = PROVIDER_ENV_VARS.get(provider_sel, "?")
+        st.write(f"DEBUG: selected=`{provider_sel}`, env_var=`{env_var}`, value=`{os.environ.get(env_var, '')[:8]}...`")
         try:
+            from brompt._providers_legacy import build_provider_from_env
+            p = build_provider_from_env()
+            st.write(f"DEBUG: build_provider_from_env() -> {type(p).__name__ if p else 'None'}")
             engine = BromptEngine(config_path)
             hooks_manager.register(LoggingHook())
             hooks_manager.register(TimingHook())
