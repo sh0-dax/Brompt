@@ -31,6 +31,8 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "config_path" not in st.session_state:
     st.session_state.config_path = "agent.brompt.yaml"
+if "execution_history" not in st.session_state:
+    st.session_state.execution_history = []
 
 PROVIDER_FACTORIES = {
     "Gemini": lambda key: GeminiProvider(api_key=key, model="gemini-2.5-flash"),
@@ -130,8 +132,16 @@ with col1:
             with st.spinner("Processing..."):
                 try:
                     query, ctx = hooks_manager.before_execute(prompt, None)
-                    result = st.session_state.engine.execute(query, ctx)
+                    engine = st.session_state.engine
+                    result = engine.execute(query, ctx)
                     result = hooks_manager.after_execute(result)
+                    st.session_state.execution_history.append({
+                        "msg": prompt[:30],
+                        "latency_ms": engine._last_latency_ms,
+                        "tokens": engine._last_tokens_used,
+                        "secure": result.is_secure,
+                        "provider_used": result.data.get("provider_used", False),
+                    })
                     if result.is_secure:
                         response = result.data.get("llm_response", "")
                         if response:
@@ -143,6 +153,10 @@ with col1:
                         st.error(f"Error: {result.error_message}")
                 except Exception as exc:
                     st.error(f"Error: {exc}")
+                    st.session_state.execution_history.append({
+                        "msg": prompt[:30], "latency_ms": 0,
+                        "tokens": 0, "secure": False, "provider_used": False,
+                    })
 
 with col2:
     st.subheader("📊 Metrics")
@@ -167,6 +181,22 @@ with col2:
                 st.json(entries[-10:])
             else:
                 st.caption("No entries")
+
+        with st.expander("Execution History", expanded=True):
+            history = st.session_state.execution_history
+            if history:
+                import pandas as pd
+                df = pd.DataFrame(history)
+                df["idx"] = range(1, len(df) + 1)
+                df = df.set_index("idx")
+                col_a, col_b = st.columns(2)
+                col_a.metric("Messages", len(df))
+                col_b.metric("Avg Latency", f"{df['latency_ms'].mean():.0f}ms")
+                st.bar_chart(df[["latency_ms", "tokens"]], height=200)
+                with st.expander("Raw Data", expanded=False):
+                    st.dataframe(df[["msg", "latency_ms", "tokens", "secure"]], use_container_width=True)
+            else:
+                st.caption("No executions yet")
 
         with st.expander("Templates", expanded=False):
             names = template_registry.list()
