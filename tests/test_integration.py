@@ -8,12 +8,25 @@ Set provider env vars before running cloud tests:
     $env:OPENAI_API_KEY = "..."
 """
 
+import asyncio
 import os
 
 import pytest
 
 from brompt.core import BromptEngine
-from brompt.providers import OllamaProvider, GeminiProvider, OpenAIProvider
+from brompt.providers import GeminiProvider, OllamaProvider, OpenAIProvider
+
+
+def _ollama_available() -> bool:
+    """Best-effort check that a local Ollama server is actually reachable,
+    so ``-m integration`` skips cleanly instead of erroring when nobody has
+    Ollama running (mirrors the API-key skipif used for Gemini/OpenAI)."""
+    try:
+        import ollama
+        ollama.Client().list()
+        return True
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -21,6 +34,7 @@ from brompt.providers import OllamaProvider, GeminiProvider, OpenAIProvider
 # ---------------------------------------------------------------------------
 
 @pytest.mark.integration
+@pytest.mark.skipif(not _ollama_available(), reason="Ollama server not reachable at localhost:11434")
 class TestOllamaIntegration:
     @pytest.fixture(autouse=True)
     def _setup(self, tmp_path):
@@ -66,9 +80,6 @@ class TestOllamaIntegration:
         async def run():
             return await engine.execute_async("Say 'hello from async' and nothing else.")
 
-        result = pytest.run(run) if hasattr(pytest, "run") else None
-        # Fallback: run async directly
-        import asyncio
         result = asyncio.run(run())
         print(f"\n[Ollama] Async response: {result.data.get('llm_response')}")
         assert result.is_secure is True
@@ -136,8 +147,6 @@ class TestGeminiIntegration:
         provider = GeminiProvider(model="gemini-2.5-flash")
         engine = BromptEngine(str(self.config), provider=provider)
 
-        import asyncio
-
         async def run():
             return await engine.execute_async("Say 'hello from async gemini' and nothing else.")
 
@@ -175,8 +184,8 @@ class TestMultiProviderComparison:
         )
 
     @pytest.mark.skipif(
-        not os.environ.get("GEMINI_API_KEY"),
-        reason="GEMINI_API_KEY not set",
+        not os.environ.get("GEMINI_API_KEY") or not _ollama_available(),
+        reason="GEMINI_API_KEY not set or Ollama not reachable",
     )
     def test_same_query_different_providers(self):
         query = "What is the meaning of life? Reply in one sentence."
@@ -196,8 +205,8 @@ class TestMultiProviderComparison:
         assert gemini_result.data["provider_used"] is True
 
     @pytest.mark.skipif(
-        not os.environ.get("OPENAI_API_KEY"),
-        reason="OPENAI_API_KEY not set",
+        not os.environ.get("OPENAI_API_KEY") or not _ollama_available(),
+        reason="OPENAI_API_KEY not set or Ollama not reachable",
     )
     def test_ollama_vs_openai(self):
         query = "What is the meaning of life? Reply in one sentence."
@@ -267,8 +276,6 @@ class TestOpenAIIntegration:
     def test_async_execution(self):
         provider = OpenAIProvider(model="gpt-4o")
         engine = BromptEngine(str(self.config), provider=provider)
-
-        import asyncio
 
         async def run():
             return await engine.execute_async("Say 'hello from async openai' and nothing else.")

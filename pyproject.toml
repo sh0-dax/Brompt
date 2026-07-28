@@ -72,5 +72,6 @@ where = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
-    "integration: tests that make real API calls",
+    "integration: tests that make real API calls (excluded by default; run with -m integration)",
 ]
+addopts = "-m 'not integration'"

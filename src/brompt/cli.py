@@ -207,7 +207,7 @@ def main():
 
             elif cmd == "clear":
                 engine.memory.clear()
-                console.print("[green]Memory cleared.[/dim]\n")
+                console.print("[green]Memory cleared.[/green]\n")
 
             else:
                 print_result(engine.execute(user_input))

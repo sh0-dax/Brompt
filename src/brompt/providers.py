@@ -27,6 +27,72 @@ class ProviderError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
+# Shared retry-with-backoff helper (used by every cloud provider below).
+# Previously this logic existed only inside GeminiProvider -- a 429 from
+# Anthropic, OpenAI, Mistral, or Azure OpenAI would fail immediately with
+# no retry. Centralizing it here means one fix/tuning applies everywhere.
+# ---------------------------------------------------------------------------
+
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 1.0
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Return True when *exc* represents a HTTP 429 / rate-limit response."""
+    if getattr(exc, "code", None) == 429:
+        return True
+    if getattr(exc, "status_code", None) == 429:
+        return True
+    msg = str(exc).lower()
+    return "429" in msg or "resource_exhausted" in msg or "toomanyrequests" in msg or "rate_limit" in msg
+
+
+def _retry_sync(call, provider_name: str):
+    """Runs a zero-arg callable, retrying with exponential backoff + jitter
+    on rate-limit errors only. Any other exception propagates immediately.
+    On final failure, re-raises the *original* exception unchanged so the
+    caller's existing ``except Exception as exc: raise ProviderError(...)``
+    wrapping still applies."""
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            return call()
+        except Exception as exc:
+            last_exc = exc
+            if _is_rate_limit_error(exc) and attempt < _MAX_RETRIES:
+                delay = _RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 0.5)
+                logger.warning(
+                    "%s rate-limited (429), retrying in %.1fs (attempt %d/%d)",
+                    provider_name, delay, attempt + 1, _MAX_RETRIES,
+                )
+                time.sleep(delay)
+                continue
+            raise
+    raise last_exc  # pragma: no cover -- loop always returns or raises above
+
+
+async def _retry_async(call, provider_name: str):
+    """Async counterpart of :func:`_retry_sync`; ``call`` is an async
+    zero-arg callable (``await call()``)."""
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            return await call()
+        except Exception as exc:
+            last_exc = exc
+            if _is_rate_limit_error(exc) and attempt < _MAX_RETRIES:
+                delay = _RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 0.5)
+                logger.warning(
+                    "%s rate-limited (429), retrying in %.1fs (attempt %d/%d)",
+                    provider_name, delay, attempt + 1, _MAX_RETRIES,
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise
+    raise last_exc  # pragma: no cover
+
+
+# ---------------------------------------------------------------------------
 # Abstract base
 # ---------------------------------------------------------------------------
 
@@ -74,7 +140,7 @@ class AnthropicProvider(LLMProvider):
             kwargs: dict = {"model": self.model, "max_tokens": 1024, "messages": messages}
             if system:
                 kwargs["system"] = system
-            response = self._client.messages.create(**kwargs)
+            response = _retry_sync(lambda: self._client.messages.create(**kwargs), "Anthropic")
         except Exception as exc:
             raise ProviderError(f"Anthropic API call failed: {exc}") from exc
         text_blocks = [b.text for b in response.content if getattr(b, "type", None) == "text"]
@@ -109,7 +175,7 @@ class AsyncAnthropicProvider(LLMProvider):
             kwargs: dict = {"model": self.model, "max_tokens": 1024, "messages": messages}
             if system:
                 kwargs["system"] = system
-            response = await self._client.messages.create(**kwargs)
+            response = await _retry_async(lambda: self._client.messages.create(**kwargs), "Anthropic")
         except Exception as exc:
             raise ProviderError(f"Anthropic API call failed: {exc}") from exc
         text_blocks = [b.text for b in response.content if getattr(b, "type", None) == "text"]
@@ -146,8 +212,11 @@ class OpenAIProvider(LLMProvider):
             if system:
                 full_messages.append({"role": "system", "content": system})
             full_messages.extend(messages)
-            response = self._client.chat.completions.create(
-                model=self.model, max_tokens=1024, messages=full_messages
+            response = _retry_sync(
+                lambda: self._client.chat.completions.create(
+                    model=self.model, max_tokens=1024, messages=full_messages
+                ),
+                "OpenAI",
             )
         except Exception as exc:
             raise ProviderError(f"OpenAI API call failed: {exc}") from exc
@@ -184,8 +253,11 @@ class AsyncOpenAIProvider(LLMProvider):
             if system:
                 full_messages.append({"role": "system", "content": system})
             full_messages.extend(messages)
-            response = await self._client.chat.completions.create(
-                model=self.model, max_tokens=1024, messages=full_messages
+            response = await _retry_async(
+                lambda: self._client.chat.completions.create(
+                    model=self.model, max_tokens=1024, messages=full_messages
+                ),
+                "OpenAI",
             )
         except Exception as exc:
             raise ProviderError(f"OpenAI API call failed: {exc}") from exc
@@ -233,22 +305,6 @@ class OllamaProvider(LLMProvider):
 
 
 # ---------------------------------------------------------------------------
-# Rate-limit retry helpers (used by Gemini providers)
-# ---------------------------------------------------------------------------
-
-_MAX_RETRIES = 3
-_RETRY_BASE_DELAY = 1.0
-
-
-def _is_rate_limit_error(exc: Exception) -> bool:
-    """Return True when *exc* represents a HTTP 429 / rate-limit response."""
-    if getattr(exc, "code", None) == 429:
-        return True
-    msg = str(exc).lower()
-    return "429" in msg or "resource_exhausted" in msg or "toomanyrequests" in msg
-
-
-# ---------------------------------------------------------------------------
 # Google Gemini
 # ---------------------------------------------------------------------------
 
@@ -278,29 +334,14 @@ class GeminiProvider(LLMProvider):
         kwargs: dict = {"model": self.model, "contents": contents}
         if system:
             kwargs["config"] = {"system_instruction": system}
-
-        last_exc: Exception | None = None
-        for attempt in range(_MAX_RETRIES + 1):
-            try:
-                response = self._client.models.generate_content(**kwargs)
-                text = response.text
-                if not text:
-                    raise ProviderError("Gemini response contained no text content.")
-                return text
-            except Exception as exc:
-                last_exc = exc
-                if _is_rate_limit_error(exc) and attempt < _MAX_RETRIES:
-                    delay = _RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 0.5)
-                    logger.warning(
-                        "Gemini rate-limited (429), retrying in %.1fs (attempt %d/%d)",
-                        delay, attempt + 1, _MAX_RETRIES,
-                    )
-                    time.sleep(delay)
-                    continue
-                raise ProviderError(f"Gemini API call failed: {exc}") from exc
-        raise ProviderError(
-            f"Gemini API call failed after {_MAX_RETRIES} retries: {last_exc}"
-        ) from last_exc
+        try:
+            response = _retry_sync(lambda: self._client.models.generate_content(**kwargs), "Gemini")
+        except Exception as exc:
+            raise ProviderError(f"Gemini API call failed: {exc}") from exc
+        text = response.text
+        if not text:
+            raise ProviderError("Gemini response contained no text content.")
+        return text
 
 
 class AsyncGeminiProvider(LLMProvider):
@@ -332,29 +373,14 @@ class AsyncGeminiProvider(LLMProvider):
         kwargs: dict = {"model": self.model, "contents": contents}
         if system:
             kwargs["config"] = {"system_instruction": system}
-
-        last_exc: Exception | None = None
-        for attempt in range(_MAX_RETRIES + 1):
-            try:
-                response = await self._client.aio.models.generate_content(**kwargs)
-                text = response.text
-                if not text:
-                    raise ProviderError("Gemini response contained no text content.")
-                return text
-            except Exception as exc:
-                last_exc = exc
-                if _is_rate_limit_error(exc) and attempt < _MAX_RETRIES:
-                    delay = _RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 0.5)
-                    logger.warning(
-                        "Gemini rate-limited (429), retrying in %.1fs (attempt %d/%d)",
-                        delay, attempt + 1, _MAX_RETRIES,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-                raise ProviderError(f"Gemini API call failed: {exc}") from exc
-        raise ProviderError(
-            f"Gemini API call failed after {_MAX_RETRIES} retries: {last_exc}"
-        ) from last_exc
+        try:
+            response = await _retry_async(lambda: self._client.aio.models.generate_content(**kwargs), "Gemini")
+        except Exception as exc:
+            raise ProviderError(f"Gemini API call failed: {exc}") from exc
+        text = response.text
+        if not text:
+            raise ProviderError("Gemini response contained no text content.")
+        return text
 
 
 # ---------------------------------------------------------------------------
@@ -409,8 +435,11 @@ class AzureOpenAIProvider(LLMProvider):
             if system:
                 full_messages.append({"role": "system", "content": system})
             full_messages.extend(messages)
-            response = self._client.chat.completions.create(
-                model=self.deployment, max_tokens=1024, messages=full_messages
+            response = _retry_sync(
+                lambda: self._client.chat.completions.create(
+                    model=self.deployment, max_tokens=1024, messages=full_messages
+                ),
+                "Azure OpenAI",
             )
         except Exception as exc:
             raise ProviderError(f"Azure OpenAI API call failed: {exc}") from exc
@@ -465,8 +494,11 @@ class AsyncAzureOpenAIProvider(LLMProvider):
             if system:
                 full_messages.append({"role": "system", "content": system})
             full_messages.extend(messages)
-            response = await self._client.chat.completions.create(
-                model=self.deployment, max_tokens=1024, messages=full_messages
+            response = await _retry_async(
+                lambda: self._client.chat.completions.create(
+                    model=self.deployment, max_tokens=1024, messages=full_messages
+                ),
+                "Azure OpenAI",
             )
         except Exception as exc:
             raise ProviderError(f"Azure OpenAI API call failed: {exc}") from exc
@@ -504,7 +536,9 @@ class MistralProvider(LLMProvider):
             if system:
                 full_messages.append({"role": "system", "content": system})
             full_messages.extend(messages)
-            response = self._client.chat.complete(model=self.model, messages=full_messages)
+            response = _retry_sync(
+                lambda: self._client.chat.complete(model=self.model, messages=full_messages), "Mistral"
+            )
         except Exception as exc:
             raise ProviderError(f"Mistral API call failed: {exc}") from exc
         content = response.choices[0].message.content
@@ -540,7 +574,9 @@ class AsyncMistralProvider(LLMProvider):
             if system:
                 full_messages.append({"role": "system", "content": system})
             full_messages.extend(messages)
-            response = await self._client.chat.complete_async(model=self.model, messages=full_messages)
+            response = await _retry_async(
+                lambda: self._client.chat.complete_async(model=self.model, messages=full_messages), "Mistral"
+            )
         except Exception as exc:
             raise ProviderError(f"Mistral API call failed: {exc}") from exc
         content = response.choices[0].message.content

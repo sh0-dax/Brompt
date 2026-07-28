@@ -1,6 +1,7 @@
 """Brompt Engine — Floating Widget
 
-Always-on-top dark-themed panel with documentation and live engine status.
+Always-on-top dark-themed panel with documentation, live engine status,
+and a small visual chart tracking request activity over time.
 Usage:  python -m brompt.widget [--live]
 """
 
@@ -8,7 +9,7 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import font as tkfont
+from collections import deque
 
 # ---------------------------------------------------------------------------
 # Theme colours (matches Brompt dark palette)
@@ -25,10 +26,13 @@ RED = "#f85149"
 YELLOW = "#d29922"
 PURPLE = "#bc8cff"
 
-WIDTH = 380
-HEIGHT = 520
-MINI_SIZE = 44
+# Smaller footprint than before (was 380x520) -- fits comfortably in a
+# screen corner without covering much of whatever's behind it.
+WIDTH = 260
+HEIGHT = 360
+MINI_SIZE = 34
 REFRESH_MS = 2000
+CHART_HISTORY_LEN = 30  # samples kept for the rolling activity line
 
 # ---------------------------------------------------------------------------
 # Documentation content (static)
@@ -53,6 +57,12 @@ DOCS_TEXT = """
   > brompt > My name is Bob
   > brompt > What is my name?
   > brompt > exit
+
+  TABS
+  ─────────────────────────────────────
+  Docs   This reference
+  Live   Engine status, memory, audit
+  Chart  Secure/Rejected bars + trend
 
   7-STAGE PIPELINE
   ─────────────────────────────────────
@@ -117,6 +127,9 @@ class BromptWidget:
         self.engine = None
         self._stop = False
         self.badge = None
+        # Rolling samples of (secure_count, rejected_count) for the Chart tab.
+        self._chart_samples: deque = deque(maxlen=CHART_HISTORY_LEN)
+        self._active_tab = "docs"
 
         self._build_ui()
         self._bind_drag()
@@ -178,6 +191,12 @@ class BromptWidget:
         )
         self.tab_live.pack(side=tk.LEFT, padx=2, pady=6)
 
+        self.tab_chart = tk.Button(
+            self.tab_frame, text=" Chart ", bg=BG_CARD, fg=MUTED,
+            bd=0, font=("Consolas", 10, "bold"), command=lambda: self._switch_tab("chart"),
+        )
+        self.tab_chart.pack(side=tk.LEFT, padx=2, pady=6)
+
         self.status_label = tk.Label(
             self.tab_frame, text="● dry-run",
             bg=BG, fg=MUTED, font=("Consolas", 9), anchor="e",
@@ -214,6 +233,11 @@ class BromptWidget:
         self.live_text.configure(yscrollcommand=self.live_scroll.set)
         self.live_text.configure(state=tk.DISABLED)
 
+        # Chart canvas -- bar chart (secure vs rejected) + rolling activity
+        # line, drawn with plain tkinter Canvas primitives (no plotting
+        # library dependency needed for a widget this small).
+        self.chart_canvas = tk.Canvas(self.content_frame, bg=BG, bd=0, highlightthickness=0)
+
         # Show docs by default
         self._show_tab("docs")
 
@@ -222,24 +246,35 @@ class BromptWidget:
     # ------------------------------------------------------------------
     def _switch_tab(self, tab):
         self._show_tab(tab)
-        if tab == "live" and self.engine is None:
+        if tab in ("live", "chart") and self.engine is None:
             self._connect_engine()
 
     def _show_tab(self, tab):
-        # Hide both
+        # Hide all three
         self.docs_text.pack_forget()
         self.docs_scroll.pack_forget()
         self.live_text.pack_forget()
         self.live_scroll.pack_forget()
+        self.chart_canvas.pack_forget()
+
+        self._active_tab = tab
 
         if tab == "docs":
             self.tab_docs.configure(bg=CYAN, fg="#000000")
             self.tab_live.configure(bg=BG_CARD, fg=MUTED)
+            self.tab_chart.configure(bg=BG_CARD, fg=MUTED)
             self.docs_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             self.docs_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        elif tab == "chart":
+            self.tab_docs.configure(bg=BG_CARD, fg=MUTED)
+            self.tab_live.configure(bg=BG_CARD, fg=MUTED)
+            self.tab_chart.configure(bg=CYAN, fg="#000000")
+            self.chart_canvas.pack(fill=tk.BOTH, expand=True)
+            self._refresh_live()
         else:
             self.tab_docs.configure(bg=BG_CARD, fg=MUTED)
             self.tab_live.configure(bg=CYAN, fg="#000000")
+            self.tab_chart.configure(bg=BG_CARD, fg=MUTED)
             self.live_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             self.live_scroll.pack(side=tk.RIGHT, fill=tk.Y)
             self._refresh_live()
@@ -344,8 +379,9 @@ class BromptWidget:
     # ------------------------------------------------------------------
     def _connect_engine(self):
         try:
-            from brompt.core import BromptEngine
             from pathlib import Path
+
+            from brompt.core import BromptEngine
             # Find config
             candidates = [Path.cwd(), Path(__file__).resolve().parent.parent.parent]
             config = None
@@ -395,7 +431,6 @@ class BromptWidget:
                 h_count = len(history)
                 e_count = len(entries)
                 chain_str = "VALID" if chain_ok else "TAMPERED"
-                chain_clr = GREEN if chain_ok else RED
                 sec_count = sum(1 for e in entries if e.get("is_secure"))
                 rej_count = e_count - sec_count
 
@@ -429,6 +464,10 @@ class BromptWidget:
                     content += "  (empty)\n"
 
                 content += f"\n  Updated: {time.strftime('%H:%M:%S')}\n"
+
+                self._chart_samples.append((sec_count, rej_count))
+                if getattr(self, "_active_tab", None) == "chart":
+                    self._draw_chart(sec_count, rej_count)
             except Exception as exc:
                 content = f"  ERROR: {exc}\n"
 
@@ -436,6 +475,68 @@ class BromptWidget:
         self.live_text.delete("1.0", tk.END)
         self.live_text.insert("1.0", content)
         self.live_text.configure(state=tk.DISABLED)
+
+    # ------------------------------------------------------------------
+    # Chart tab -- bar chart (secure vs rejected) + rolling activity line
+    # ------------------------------------------------------------------
+    def _draw_chart(self, sec_count: int, rej_count: int):
+        c = self.chart_canvas
+        c.delete("all")
+        c.update_idletasks()
+        w = max(c.winfo_width(), 200)
+        h = max(c.winfo_height(), 200)
+        pad = 14
+
+        # --- Title ---
+        c.create_text(pad, 12, anchor="w", fill=TEXT, font=("Consolas", 10, "bold"),
+                       text="Request Activity")
+
+        # --- Bar chart: Secure vs Rejected (top half) ---
+        bar_area_top = 32
+        bar_area_h = int(h * 0.42)
+        bar_w = 46
+        gap = 30
+        total = max(sec_count + rej_count, 1)
+        max_bar_h = bar_area_h - 20
+
+        bars = [("Secure", sec_count, GREEN), ("Rejected", rej_count, RED)]
+        start_x = pad + 10
+        for i, (label, count, color) in enumerate(bars):
+            x0 = start_x + i * (bar_w + gap)
+            x1 = x0 + bar_w
+            bar_h = int((count / total) * max_bar_h) if total else 0
+            y1 = bar_area_top + max_bar_h
+            y0 = y1 - bar_h
+            c.create_rectangle(x0, bar_area_top, x1, y1, outline=BORDER, fill=BG_CARD)
+            if bar_h > 0:
+                c.create_rectangle(x0, y0, x1, y1, outline="", fill=color)
+            c.create_text((x0 + x1) / 2, y1 + 10, fill=MUTED, font=("Consolas", 8),
+                           text=label)
+            c.create_text((x0 + x1) / 2, bar_area_top - 8, fill=TEXT, font=("Consolas", 9, "bold"),
+                           text=str(count))
+
+        # --- Rolling line: total requests per sample, last N refreshes ---
+        line_top = bar_area_top + max_bar_h + 42
+        line_h = h - line_top - 24
+        if line_h > 20 and len(self._chart_samples) >= 2:
+            c.create_text(pad, line_top - 12, anchor="w", fill=MUTED, font=("Consolas", 8),
+                           text=f"Trend (last {len(self._chart_samples)} samples)")
+            totals = [s + r for s, r in self._chart_samples]
+            max_total = max(totals) or 1
+            usable_w = w - 2 * pad
+            n = len(totals)
+            step = usable_w / max(n - 1, 1)
+            points = []
+            for i, val in enumerate(totals):
+                x = pad + i * step
+                y = line_top + line_h - (val / max_total) * line_h
+                points.extend([x, y])
+            if len(points) >= 4:
+                c.create_line(*points, fill=CYAN, width=2, smooth=True)
+            for i in (0, n - 1):
+                x = pad + i * step
+                y = line_top + line_h - (totals[i] / max_total) * line_h
+                c.create_oval(x - 2, y - 2, x + 2, y + 2, fill=CYAN, outline="")
 
     # ------------------------------------------------------------------
     # Run

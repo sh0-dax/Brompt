@@ -19,8 +19,8 @@ class SecurityEngine:
         (r"\breveal\s+(your\s+)?(system\s+)?prompt\b", "System Leakage Attempt"),
         (r"\breveal\s+internal\s+keys\b", "Credential Leakage Attempt"),
         (r"you\s+are\s+now\s+in\s+(developer|dan|god)\s+mode", "Jailbreak: Persona Switch"),
-        (r"تجاهل\s+(جميع\s+)?التعليمات\s+السابقة", "Hijri: Instruction Override Attempt"),
-        (r"أنت\s+(الآن\s+)?في\s+وضع\s+المطور", "Hijri: Developer Mode Bypass"),
+        (r"تجاهل\s+(جميع\s+)?التعليمات\s+السابقة", "Arabic: Instruction Override Attempt"),
+        (r"أنت\s+(الآن\s+)?في\s+وضع\s+المطور", "Arabic: Developer Mode Bypass"),
     ]
 
     OUTPUT_LEAK_PATTERNS: ClassVar[list[tuple[str, str]]] = [
