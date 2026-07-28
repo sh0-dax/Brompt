@@ -80,7 +80,7 @@ dev = [
 ]
 
 [project.scripts]
-brompt = "brompt.cli.main:main"
+brompt = "brompt.cli.main:cli_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

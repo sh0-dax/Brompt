@@ -310,3 +310,8 @@ def _handle_chat_command(engine: BromptEngine, cmd: str):
         console.print("[green]Memory cleared.[/green]")
     else:
         console.print(f"[red]Unknown command: {cmd}. Type /help for commands.[/red]")
+
+
+def cli_main():
+    """Entry point for the `brompt` console script."""
+    app()
