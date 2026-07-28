@@ -208,7 +208,8 @@ with col2:
                 col_b.metric("Avg Latency", f"{df['latency_ms'].mean():.0f}ms")
                 total_overhead = df["cost"].sum() - df["plain_cost"].sum()
                 pct = (total_overhead / df["cost"].sum() * 100) if df["cost"].sum() > 0 else 0
-                col_c.metric("Total Cost", f"${df['cost'].sum():.4f}", delta=f"{pct:.0f}% overhead")
+                total_val = df["cost"].sum()
+                col_c.metric("Total Cost", f"${total_val:.6f}", delta=f"{pct:.1f}% overhead")
                 st.bar_chart(df[["latency_ms", "tokens"]], height=200)
                 last = history[-1]
                 overhead_tokens = last["prompt_tokens"] - last["plain_prompt_tokens"]

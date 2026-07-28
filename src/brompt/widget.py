@@ -56,12 +56,31 @@ class PromptResult:
             "plain_prompt_tokens": self.plain_prompt_tokens,
             "cost": self.cost,
             "plain_cost": self.plain_cost,
+            "overhead_cost": round(self.cost - self.plain_cost, 6),
             "latency_ms": self.latency_ms,
             "timestamp": self.timestamp.isoformat(),
         }
 
+    @property
+    def cost_breakdown(self) -> dict:
+        return {
+            "total": round(self.cost, 6),
+            "prompt": round(self.plain_cost, 6),
+            "overhead": round(self.cost - self.plain_cost, 6),
+            "overhead_pct": round((self.cost - self.plain_cost) / self.cost * 100, 1) if self.cost > 0 else 0.0,
+        }
+
     def __str__(self) -> str:
         return self.response
+
+    def __repr__(self) -> str:
+        overhead = self.cost - self.plain_cost
+        return (
+            f"PromptResult(response={self.response[:50]}..., "
+            f"cost=${self.cost:.6f} [prompt=${self.plain_cost:.6f} + overhead=${overhead:.6f}], "
+            f"tokens={self.prompt_tokens}in/{self.completion_tokens}out, "
+            f"latency={self.latency_ms:.0f}ms)"
+        )
 
 
 class LRUCache:
