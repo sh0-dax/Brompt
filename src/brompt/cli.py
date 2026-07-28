@@ -73,6 +73,27 @@ def boot_animation():
     console.print("[bold green]✔ All subsystems loaded.[/bold green]\n")
 
 
+def print_help():
+    """Display available commands."""
+    table = Table(
+        title="Brompt CLI Commands",
+        border_style="cyan",
+        title_style="bold cyan",
+        show_header=True,
+        header_style="bold cyan",
+    )
+    table.add_column("Command", style="bold yellow", width=18)
+    table.add_column("Description")
+    table.add_row("help", "Show this help message")
+    table.add_row("status", "Show engine status and provider info")
+    table.add_row("history", "Show bounded turn history")
+    table.add_row("audit", "Show audit log entries")
+    table.add_row("clear", "Clear memory and turn history")
+    table.add_row("exit / quit", "Shut down the engine")
+    console.print(table)
+    console.print("[dim]Any other input is sent through the 7-stage pipeline.[/dim]\n")
+
+
 def print_result(result):
     """Styled table for successful results, panel for errors."""
     if result.is_secure:
@@ -120,14 +141,76 @@ def main():
         config_path = _find_config()
         console.print(f"[dim]Config: {config_path}[/dim]\n")
         engine = BromptEngine(config_path)
-        console.print("[dim]Type [bold]exit[/bold] or [bold]quit[/bold] to stop.[/dim]\n")
+        provider_name = type(engine.provider).__name__ if engine.provider else "None (dry-run)"
+        console.print(f"[dim]Provider: [bold]{provider_name}[/bold][/dim]")
+        console.print("[dim]Type [bold]help[/bold] for commands, [bold]exit[/bold] to stop.[/dim]\n")
 
         while True:
-            user_input = console.input("[bold yellow]⚡ brompt > [/bold yellow]")
-            if user_input.lower().strip() in ["exit", "quit"]:
+            user_input = console.input("[bold yellow]⚡ brompt > [/bold yellow]").strip()
+            if not user_input:
+                continue
+            cmd = user_input.lower()
+
+            if cmd in ("exit", "quit"):
                 console.print(Panel("[bold gray]Shutting down...[/bold gray]", border_style="dim"))
                 break
-            print_result(engine.execute(user_input))
+
+            elif cmd == "help":
+                print_help()
+
+            elif cmd == "status":
+                t = Table(title="Engine Status", border_style="cyan", show_header=True, header_style="bold cyan")
+                t.add_column("Field", width=20)
+                t.add_column("Value")
+                t.add_row("Provider", provider_name)
+                t.add_row("Provider Enabled", str(engine.provider is not None))
+                t.add_row("State ID", engine.state_id)
+                t.add_row("History Size", str(len(engine.memory.get_history())))
+                t.add_row("Max History", str(engine.memory.max_turns))
+                t.add_row("Audit Entries", str(len(engine.audit.read_all())))
+                t.add_row("Audit Valid", str(engine.audit.verify()))
+                console.print(t)
+                console.print()
+
+            elif cmd == "history":
+                history = engine.memory.get_history()
+                if not history:
+                    console.print("[dim]No history yet.[/dim]\n")
+                else:
+                    t = Table(title="Turn History", border_style="purple", show_header=True, header_style="bold purple")
+                    t.add_column("#", width=4)
+                    t.add_column("Role", width=10)
+                    t.add_column("Content")
+                    for i, turn in enumerate(history, 1):
+                        content = turn["content"][:80] + "..." if len(turn["content"]) > 80 else turn["content"]
+                        t.add_row(str(i), turn["role"], content)
+                    console.print(t)
+                    console.print()
+
+            elif cmd == "audit":
+                entries = engine.audit.read_all()
+                if not entries:
+                    console.print("[dim]No audit entries yet.[/dim]\n")
+                else:
+                    t = Table(title="Audit Log", border_style="yellow", show_header=True, header_style="bold yellow")
+                    t.add_column("#", width=4)
+                    t.add_column("Event", width=18)
+                    t.add_column("State ID", width=16)
+                    t.add_column("Secure", width=8)
+                    for i, e in enumerate(entries, 1):
+                        secure = "[green]Yes[/green]" if e.get("is_secure") else "[red]No[/red]"
+                        t.add_row(str(i), e["event"], e["state_id"][:16], secure)
+                    console.print(t)
+                    valid = engine.audit.verify()
+                    color = "green" if valid else "red"
+                    console.print(f"[{color}]Chain integrity: {'VALID' if valid else 'TAMPERED'}[/{color}]\n")
+
+            elif cmd == "clear":
+                engine.memory.clear()
+                console.print("[green]Memory cleared.[/dim]\n")
+
+            else:
+                print_result(engine.execute(user_input))
 
     except FileNotFoundError as e:
         console.print(f"[red]Config Error: {e}[/red]")
