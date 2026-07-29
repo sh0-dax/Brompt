@@ -17,6 +17,12 @@ from brompt._providers_legacy import (
 )
 from brompt.pricing import estimate_cost
 from brompt.optimizer import TokenOptimizer
+from modern_ui import (
+    inject_design_system, render_hero_section,
+    render_savings_badge, render_cached_badge, render_progress_bar,
+    render_card, show_success_toast, show_savings_toast,
+    show_error_toast, show_info_toast,
+)
 
 st.set_page_config(
     page_title="Brompt Engine",
@@ -24,6 +30,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+inject_design_system()
 
 # --- session state ----------------------------------------------------------
 
@@ -43,6 +51,8 @@ if "max_context_messages" not in st.session_state:
     st.session_state.max_context_messages = 4
 if "total_saved_tokens" not in st.session_state:
     st.session_state.total_saved_tokens = 0
+if "total_cost_saved" not in st.session_state:
+    st.session_state.total_cost_saved = 0.0
 if "system_sent" not in st.session_state:
     st.session_state.system_sent = False
 
@@ -79,7 +89,10 @@ def _fmt_cost(c: float) -> str:
 # --- sidebar ----------------------------------------------------------------
 
 with st.sidebar:
-    st.title("⚡ Brompt Engine")
+    st.markdown(
+        '<h2 style="font-weight:800; margin:0;">⚡ Brompt Engine</h2>',
+        unsafe_allow_html=True,
+    )
     st.caption("Deterministic State-Driven LLM Orchestration")
 
     with st.expander("API Key", expanded=not bool(st.session_state.engine)):
@@ -99,8 +112,10 @@ with st.sidebar:
             st.session_state.engine = engine
             st.session_state.config_path = config_path
             provider_name = type(engine.provider).__name__ if engine.provider else "dry-run"
+            show_success_toast(f"Engine initialized: {provider_name}")
             st.success(f"Engine initialized: {provider_name}")
         except Exception as exc:
+            show_error_toast(str(exc))
             st.error(f"Failed to initialize: {exc}")
 
     st.divider()
@@ -142,9 +157,19 @@ with st.sidebar:
     if st.button("Clear History", use_container_width=True):
         st.session_state.messages = []
         st.session_state.system_sent = False
+        st.session_state.execution_history = []
         if st.session_state.engine:
             st.session_state.engine.memory.clear()
         st.rerun()
+
+# --- hero -------------------------------------------------------------------
+
+render_hero_section(
+    total_requests=len(st.session_state.execution_history),
+    tokens_saved=st.session_state.total_saved_tokens,
+    cost_saved=st.session_state.total_cost_saved,
+    active_template=selected_template or "default",
+)
 
 # --- main panel -------------------------------------------------------------
 
@@ -172,7 +197,9 @@ with col1:
                 hooks_manager.register(LoggingHook())
                 hooks_manager.register(TimingHook())
                 st.session_state.engine = engine
+                show_success_toast("Engine auto-initialized")
             except Exception as exc:
+                show_error_toast(str(exc))
                 st.error(f"Cannot auto-init engine: {exc}")
                 st.stop()
 
@@ -206,6 +233,9 @@ with col1:
                     provider_name = type(engine.provider).__name__ if engine.provider else "None"
                     cost = estimate_cost(provider_name, prompt_tokens, completion_tokens)
                     plain_cost = estimate_cost(provider_name, plain_prompt_tokens, completion_tokens)
+                    cost_saved = savings.get("saved_tokens", 0) / 1000 * 0.03
+                    st.session_state.total_cost_saved += cost_saved
+
                     st.session_state.execution_history.append({
                         "msg": prompt[:30],
                         "latency_ms": engine._last_latency_ms,
@@ -219,16 +249,24 @@ with col1:
                         "saved_tokens": savings.get("saved_tokens", 0),
                         "savings_percent": round(savings.get("savings_percent", 0), 1),
                     })
+
                     if result.is_secure:
                         response = result.data.get("llm_response", "")
                         if response:
                             st.markdown(response)
                             st.session_state.messages.append({"role": "assistant", "content": response})
+
+                            saved_tok = savings.get("saved_tokens", 0)
+                            if saved_tok > 0:
+                                render_savings_badge(saved_tok, cost_saved)
+                                show_savings_toast(saved_tok, savings.get("savings_percent", 0))
+                                render_progress_bar(prompt_tokens, st.session_state.max_context_messages * 50 + 500, "Prompt")
                         else:
                             st.info("No response (dry-run mode)")
                     else:
                         st.error(f"Error: {result.error_message}")
                 except Exception as exc:
+                    show_error_toast(str(exc))
                     st.error(f"Error: {exc}")
                     st.session_state.execution_history.append({
                         "msg": prompt[:30], "latency_ms": 0,
@@ -290,9 +328,7 @@ with col2:
                     f"Overhead {overhead_tokens}tok {_fmt_cost(overhead_cost)}"
                 )
                 if last.get("saved_tokens", 0) > 0:
-                    st.caption(
-                        f"⚡ Saved {last['saved_tokens']} tok ({last['savings_percent']:.0f}%)"
-                    )
+                    render_savings_badge(last["saved_tokens"], last["saved_tokens"] / 1000 * 0.03)
             else:
                 st.caption("No executions yet")
 
@@ -302,7 +338,3 @@ with col2:
                 st.caption(f"• {name}")
     else:
         st.info("Initialize the engine to see metrics.")
-
-
-if __name__ == "__main__":
-    pass

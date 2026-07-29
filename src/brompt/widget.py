@@ -23,6 +23,22 @@ except ImportError:
     FeedbackLoop = None
     PromptOutcome = None
 
+try:
+    import auto_detect as _auto_detect_module
+    AUTO_DETECT_AVAILABLE = True
+except ImportError:
+    AUTO_DETECT_AVAILABLE = False
+    _auto_detect_module = None
+
+
+def _task_type_str(task_type) -> Optional[str]:
+    """Convert a TaskType enum (or string) to its string value."""
+    if task_type is None:
+        return None
+    if hasattr(task_type, 'value'):
+        return task_type.value
+    return str(task_type)
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +59,13 @@ class PromptResult:
     latency_ms: float = 0.0
     finish_reason: Optional[str] = None
     feedback_id: Optional[str] = None
+    tokens_saved: int = 0
+    cost_saved: float = 0.0
+    savings_percent: float = 0.0
+    auto_detected: bool = False
+    detected_task: Optional[str] = None
+    detection_confidence: float = 0.0
+    cached: bool = False
     metadata: dict = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
 
@@ -59,6 +82,17 @@ class PromptResult:
             "plain_cost": self.plain_cost,
             "overhead_cost": round(self.cost - self.plain_cost, 6),
             "latency_ms": self.latency_ms,
+            "savings": {
+                "tokens": self.tokens_saved,
+                "cost": round(self.cost_saved, 6),
+                "percent": round(self.savings_percent, 1),
+            },
+            "auto_detect": {
+                "enabled": self.auto_detected,
+                "task": self.detected_task,
+                "confidence": round(self.detection_confidence, 4),
+            },
+            "cached": self.cached,
             "timestamp": self.timestamp.isoformat(),
         }
 
@@ -76,11 +110,13 @@ class PromptResult:
 
     def __repr__(self) -> str:
         overhead = self.cost - self.plain_cost
+        tag = " [CACHED]" if self.cached else ""
+        saved_tag = f" saved={self.tokens_saved}tok({self.savings_percent:.0f}%)" if self.tokens_saved else ""
         return (
-            f"PromptResult(response={self.response[:50]}..., "
-            f"cost=${self.cost:.6f} [prompt=${self.plain_cost:.6f} + overhead=${overhead:.6f}], "
+            f"PromptResult(response={self.response[:50]}...{tag}, "
+            f"cost=${self.cost:.6f} [prompt=${self.plain_cost:.6f}+overhead=${overhead:.6f}], "
             f"tokens={self.prompt_tokens}in/{self.completion_tokens}out, "
-            f"latency={self.latency_ms:.0f}ms)"
+            f"latency={self.latency_ms:.0f}ms{saved_tag})"
         )
 
 
@@ -124,12 +160,94 @@ class LRUCache:
         return len(self._cache)
 
 
+class SmartCache:
+    """LRU cache with variable TTL based on task type."""
+
+    def __init__(self, max_entries: int = 1000, default_ttl: int = 3600):
+        self._max_entries = max_entries
+        self._default_ttl = default_ttl
+        self._cache: dict[str, tuple[PromptResult, float, int]] = {}
+        self._hits = 0
+        self._misses = 0
+        self._ttl_map = {
+            "translation": 86400,
+            "summarization": 7200,
+            "code_generation": 1800,
+            "code_review": 1800,
+            "debugging": 900,
+            "qa": 300,
+            "explanation": 3600,
+            "analysis": 3600,
+            "comparison": 3600,
+            "brainstorming": 600,
+            "content_writing": 1800,
+        }
+
+    def _make_key(self, user_input: str, template: str, model: str, context: Optional[dict] = None) -> str:
+        data = f"{user_input}|{template}|{model}|{json.dumps(context or {}, sort_keys=True)}"
+        return hashlib.sha256(data.encode()).hexdigest()
+
+    def get(self, user_input: str, template: str, model: str, context: Optional[dict] = None) -> Optional[PromptResult]:
+        key = self._make_key(user_input, template, model, context)
+        if key in self._cache:
+            result, timestamp, ttl = self._cache[key]
+            if time.time() - timestamp < ttl:
+                self._hits += 1
+                result.cached = True
+                return result
+            del self._cache[key]
+        self._misses += 1
+        return None
+
+    def set(self, user_input: str, template: str, model: str, context: Optional[dict], result: PromptResult):
+        key = self._make_key(user_input, template, model, context)
+        if len(self._cache) >= self._max_entries:
+            oldest_key = min(self._cache, key=lambda k: self._cache[k][1])
+            del self._cache[oldest_key]
+        ttl = self._ttl_map.get(template, self._default_ttl)
+        self._cache[key] = (result, time.time(), ttl)
+
+    def invalidate(self, template: Optional[str] = None):
+        if template:
+            keys = [k for k, (r, _, _) in self._cache.items() if r.template_id == template]
+            for k in keys:
+                del self._cache[k]
+        else:
+            self._cache.clear()
+
+    def clear(self):
+        self._cache.clear()
+
+    @property
+    def hit_rate(self) -> float:
+        total = self._hits + self._misses
+        return self._hits / total if total > 0 else 0.0
+
+    @property
+    def size(self) -> int:
+        return len(self._cache)
+
+    def __len__(self) -> int:
+        return len(self._cache)
+
+
 class BromptWidget:
-    def __init__(self, config: Optional[WidgetConfig] = None):
+    def __init__(
+        self,
+        config: Optional[WidgetConfig] = None,
+        enable_token_optimization: bool = True,
+        enable_cache: bool = True,
+        enable_auto_detect: bool = False,
+        enable_streaming: bool = True,
+    ):
         self.config = config or WidgetConfig()
         errors = self.config.validate()
         if errors:
             raise ValueError("Invalid config:\n" + "\n".join(f"  - {e}" for e in errors))
+        self._token_optimization_enabled = enable_token_optimization
+        self._cache_enabled = enable_cache
+        self._auto_detect_enabled = enable_auto_detect and AUTO_DETECT_AVAILABLE
+        self._streaming_enabled = enable_streaming
         self._setup_logging()
         self._provider: LLMProvider = ProviderFactory.from_config(self.config.provider)
         logger.info(f"Provider: {self._provider.__class__.__name__} ({self.config.provider.model})")
@@ -139,21 +257,38 @@ class BromptWidget:
             session_ttl_minutes=self.config.session.session_ttl_minutes,
             auto_cleanup=self.config.session.auto_cleanup,
         )
-        self._cache = LRUCache(
-            max_entries=self.config.cache.max_entries,
-            ttl_seconds=self.config.cache.ttl_seconds,
-        ) if self.config.cache.enabled else None
+        if self._cache_enabled and self.config.cache.enabled:
+            if hasattr(self.config.cache, 'strategy') and self.config.cache.strategy == "smart":
+                self._cache = SmartCache(
+                    max_entries=self.config.cache.max_entries,
+                    default_ttl=self.config.cache.ttl_seconds,
+                )
+            else:
+                self._cache = LRUCache(
+                    max_entries=self.config.cache.max_entries,
+                    ttl_seconds=self.config.cache.ttl_seconds,
+                )
+        else:
+            self._cache = None
         self._feedback = None
         if self.config.feedback.enabled and FEEDBACK_AVAILABLE:
             self._feedback = FeedbackLoop(storage_path=self.config.feedback.storage_path)
             logger.info("Feedback system initialised")
         elif self.config.feedback.enabled and not FEEDBACK_AVAILABLE:
             logger.warning("Feedback system unavailable — install brompt[feedback]")
-        self._optimizer = TokenOptimizer()
+        self._optimizer = TokenOptimizer() if self._token_optimization_enabled else None
+        self._detector = None
         self._is_first_message = True
         self._total_saved_tokens = 0
         self._last_savings = {}
         self._stats = {"total_prompts": 0, "total_tokens": 0, "total_latency_ms": 0.0, "total_cost": 0.0, "errors": 0}
+        self._event_handlers = {
+            "before_prompt": [],
+            "after_prompt": [],
+            "on_error": [],
+            "on_cache_hit": [],
+            "on_auto_detect": [],
+        }
         logger.info(f"BromptWidget initialised — model: {self.config.provider.model}")
 
     def _setup_logging(self):
@@ -176,12 +311,34 @@ class BromptWidget:
             raise ValueError("user_input cannot be empty")
         template = template or self.config.default_template
         start_time = time.time()
+        detection = None
         try:
+            # Auto-detect task type if enabled
+            if self._auto_detect_enabled:
+                if self._detector is None:
+                    try:
+                        from auto_detect import auto_detect_agent
+                        self._detector = auto_detect_agent
+                    except ImportError:
+                        self._auto_detect_enabled = False
+                if self._detector:
+                    detection = self._detector.detect(user_input)
+                    if not template:
+                        template = getattr(detection, 'suggested_template', None) or template
+                    self._emit("on_auto_detect", detection)
+
+            # Cache check
+            cached = None
             if self._cache:
-                cached = self._cache.get(user_input, template, context)
+                if isinstance(self._cache, SmartCache):
+                    cached = self._cache.get(user_input, template, self.config.provider.model, context)
+                else:
+                    cached = self._cache.get(user_input, template, context)
                 if cached:
                     logger.debug(f"Cache hit: {template}")
+                    self._emit("on_cache_hit", cached)
                     return cached
+
             session = None
             conversation_context = []
             if session_id:
@@ -194,6 +351,9 @@ class BromptWidget:
                     conversation_context = session.get_context(
                         last_n=self.config.session.context_window_size,
                     )
+
+            self._emit("before_prompt", {"input": user_input, "template": template})
+
             generated_prompt = self._build_prompt(
                 user_input=user_input, template=template, context=context,
                 conversation_context=conversation_context, system_prompt=system_prompt,
@@ -231,6 +391,13 @@ class BromptWidget:
                 plain_cost=plain_cost,
                 latency_ms=latency_ms,
                 finish_reason=provider_result.finish_reason,
+                tokens_saved=savings.get("saved_tokens", 0),
+                cost_saved=savings.get("cost_saved", 0),
+                savings_percent=savings.get("savings_percent", 0),
+                auto_detected=detection is not None,
+                detected_task=_task_type_str(getattr(detection, 'task_type', None)) if detection else None,
+                detection_confidence=getattr(detection, 'confidence', 0.0) if detection else 0.0,
+                cached=False,
                 metadata={
                     "provider_outcome": provider_result.outcome.value,
                     "conversation_turns": len(conversation_context),
@@ -247,7 +414,10 @@ class BromptWidget:
                               "completion_tokens": completion_tokens},
                 )
             if self._cache and provider_result.is_success:
-                self._cache.set(user_input, template, context, result)
+                if isinstance(self._cache, SmartCache):
+                    self._cache.set(user_input, template, self.config.provider.model, context, result)
+                else:
+                    self._cache.set(user_input, template, context, result)
             self._stats["total_prompts"] += 1
             self._stats["total_tokens"] += provider_result.tokens_used
             self._stats["total_latency_ms"] += latency_ms
@@ -259,6 +429,7 @@ class BromptWidget:
             overhead = cost - plain_cost
             saved = savings.get("saved_tokens", 0)
             spct = savings.get("savings_percent", 0)
+            self._emit("after_prompt", result)
             logger.info(
                 f"Executed: {template} | "
                 f"cost=${cost:.6f} (prompt=${plain_cost:.6f}+overhead=${overhead:.6f}) | "
@@ -269,6 +440,7 @@ class BromptWidget:
         except Exception as e:
             latency_ms = (time.time() - start_time) * 1000
             self._stats["errors"] += 1
+            self._emit("on_error", {"error": e, "user_input": user_input})
             logger.error(f"Execution failed: {e}")
             raise RuntimeError(f"Model call failed: {e}") from e
 
@@ -277,10 +449,16 @@ class BromptWidget:
         user_input: str,
         template: Optional[str] = None,
         session_id: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        context: Optional[dict] = None,
         **generation_kwargs,
     ) -> AsyncIterator[str]:
+        if not self._streaming_enabled:
+            raise RuntimeError("Streaming is not enabled")
         template = template or self.config.default_template
-        generated_prompt = self._build_prompt(user_input, template)
+        generated_prompt = self._build_prompt(
+            user_input, template, context=context, system_prompt=system_prompt,
+        )
         full_response = []
         async for chunk in self._provider.stream(generated_prompt, **generation_kwargs):
             full_response.append(chunk)
@@ -333,10 +511,27 @@ class BromptWidget:
             return self._feedback.get_best_template()
         return None
 
+    def on(self, event: str, handler):
+        """Register an event handler."""
+        if event in self._event_handlers:
+            self._event_handlers[event].append(handler)
+
+    def _emit(self, event: str, data):
+        """Emit an event to all registered handlers."""
+        for handler in self._event_handlers.get(event, []):
+            try:
+                handler(data)
+            except Exception as e:
+                logger.error(f"Event handler error ({event}): {e}")
+
     def reset_conversation(self):
         self._is_first_message = True
 
     def get_analytics(self) -> dict:
+        cache_hit_rate = 0.0
+        if self._cache:
+            if hasattr(self._cache, 'hit_rate'):
+                cache_hit_rate = self._cache.hit_rate
         report = {
             "stats": self._stats,
             "avg_latency_ms": (
@@ -353,6 +548,7 @@ class BromptWidget:
             "total_saved_tokens": self._total_saved_tokens,
             "active_sessions": self._sessions.get_total_sessions(),
             "cache_entries": len(self._cache) if self._cache else 0,
+            "cache_hit_rate": round(cache_hit_rate, 4),
         }
         if self._feedback:
             report["feedback"] = self._feedback.get_performance_report()
@@ -366,18 +562,38 @@ class BromptWidget:
         if context:
             template_content += "\n\n" + json.dumps(context, ensure_ascii=False, indent=2)
 
-        optimized, savings = self._optimizer.build_optimized_prompt(
-            system_prompt=system_prompt or "",
-            user_input=user_input,
-            template_content=template_content,
-            messages_history=conversation_context,
-            is_first_message=self._is_first_message,
-        )
+        if self._token_optimization_enabled and self._optimizer:
+            optimized, savings = self._optimizer.build_optimized_prompt(
+                system_prompt=system_prompt or "",
+                user_input=user_input,
+                template_content=template_content,
+                messages_history=conversation_context,
+                is_first_message=self._is_first_message,
+            )
+        else:
+            parts = []
+            if system_prompt and self._is_first_message:
+                parts.append(system_prompt)
+            parts.append(template_content)
+            optimized = "\n\n".join(p for p in parts if p)
+            savings = {"saved_tokens": 0, "savings_percent": 0, "cost_saved": 0}
         self._is_first_message = False
         self._last_savings = savings
         return optimized
 
+    def _get_system_prompt(self, template: str) -> str:
+        try:
+            from templates import get_system_prompt
+            return get_system_prompt(template)
+        except ImportError:
+            return ""
+
     def _apply_template(self, template_id: str, user_input: str, context: Optional[dict] = None) -> str:
+        try:
+            from templates import format_prompt
+            return format_prompt(template_id, user_input)
+        except ImportError:
+            pass
         builtin_templates = {
             "default": "Process the following input and provide the best possible response.",
             "code": "You are an expert programmer. Write code based on the request below. Provide clear explanation.",
@@ -388,9 +604,11 @@ class BromptWidget:
         return builtin_templates.get(template_id, builtin_templates["default"])
 
     def __repr__(self) -> str:
+        cache_hit = self._cache.hit_rate if hasattr(self._cache, 'hit_rate') and self._cache else 0
         return (
             f"BromptWidget(model='{self.config.provider.model}', "
             f"sessions={self._sessions.get_total_sessions()}, "
             f"cache={len(self._cache) if self._cache else 0}, "
-            f"saved_tokens={self._total_saved_tokens})"
+            f"saved_tokens={self._total_saved_tokens}, "
+            f"opt={self._token_optimization_enabled})"
         )

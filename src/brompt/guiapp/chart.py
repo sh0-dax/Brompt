@@ -110,23 +110,32 @@ class ChartEngine:
         bar_w = 46
         gap = 30
         n_bars = len(items)
-        total_w = n_bars * bar_w + (n_bars - 1) * gap
-        start_x = pad + 10 + max(0, (w - 2 * pad - 20 - total_w) // 2)
+        pair_w = n_bars * bar_w + (n_bars - 1) * gap
+        start_x = max(pad, (w - pair_w) / 2)
+
+        y1 = top + max_bar_h
+        for frac in (0.25, 0.5, 0.75, 1.0):
+            gy = y1 - frac * max_bar_h
+            c.create_line(pad, gy, w - pad, gy, fill=BORDER, width=1)
 
         for i, (label, count, color) in enumerate(items):
             x0 = start_x + i * (bar_w + gap)
             x1 = x0 + bar_w
             bar_h = int((count / grand) * max_bar_h) if grand else 0
-            y1 = top + max_bar_h
             y0 = y1 - bar_h
+            pct = round(100 * count / grand) if grand else 0
 
-            c.create_rectangle(x0, top, x1, y1, outline=BORDER, fill=BG)
+            c.create_rectangle(x0, top, x1, y1, outline=BORDER, fill=BG_CARD)
             if bar_h > 0:
                 c.create_rectangle(x0, y0, x1, y1, outline="", fill=color)
+                cap_h = min(4, bar_h)
+                c.create_rectangle(x0, y0, x1, y0 + cap_h, outline="",
+                                   fill=TEXT, stipple="gray25")
             c.create_text((x0 + x1) / 2, y1 + 10, fill=MUTED,
                           font=("Consolas", 8), text=label)
-            c.create_text((x0 + x1) / 2, top - 6, fill=TEXT,
-                          font=("Consolas", 9, "bold"), text=str(count))
+            c.create_text((x0 + x1) / 2, top - 8, fill=TEXT,
+                          font=("Consolas", 9, "bold"),
+                          text=f"{count} ({pct}%)")
 
     def _draw_line_area_stacked(self, c, w, h, pad, top, chart_h, vals):
         n = len(vals)
