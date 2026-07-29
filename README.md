@@ -78,17 +78,17 @@ graph TD
     A[Client] --> B[Rate Limiter]
     B --> C[Security Engine]
     C --> D{Injection Classifier?}
-    D -- Opt-in --> E[LLM-based Semantic Check]
-    D -- Skip --> F[Memory Manager]
+    D -->|Opt-in| E[LLM Semantic Check]
+    D -->|Skip| F[Memory Manager]
     E --> F
     F --> G[Circuit Breaker]
     G --> H[Model Router]
-    H --> I[Provider: OpenAI / Anthropic / Groq]
+    H --> I[Provider]
     I --> J[Response]
     J --> K[Output Sanitizer]
     K --> L[Audit Log]
     L --> M[Client]
-    G -- Open --> N[Fallback / Error]
+    G -->|Open| N[Fallback]
     N --> L
 ```
 
