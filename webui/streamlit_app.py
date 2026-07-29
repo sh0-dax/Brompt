@@ -228,9 +228,12 @@ class BromptUIAdapter:
             st.session_state.system_sent = True
             st.session_state.total_saved_tokens += savings.get("saved_tokens", 0)
 
+        t0 = _time.time()
         result: ER = e.execute(query, ctx)
+        total_ms = (_time.time() - t0) * 1000
         result = hooks_manager.after_execute(result)
 
+        elapsed_ms = e._last_latency_ms or total_ms
         completion_tokens = e._last_tokens_used
         all_text = " ".join(m["content"] for m in history)
         prompt_tokens = len(all_text) // 4
@@ -241,13 +244,13 @@ class BromptUIAdapter:
         cost_saved = savings.get("saved_tokens", 0) / 1000 * 0.03
         st.session_state.total_cost_saved += cost_saved
 
-        stages, total = _make_trace_stages(e._last_latency_ms)
+        stages, total = _make_trace_stages(elapsed_ms)
         ne = {
             "id": f"#{len(st.session_state.execution_history) + 1}",
             "status": "success" if result.is_secure else "error",
             "provider": provider_name.lower(),
             "model": self.provider_model,
-            "timing": {"total_ms": e._last_latency_ms, "provider_ms": stages[4]["time_ms"]},
+            "timing": {"total_ms": elapsed_ms, "provider_ms": stages[4]["time_ms"]},
             "tokens": {"input": prompt_tokens, "output": completion_tokens,
                        "saved": savings.get("saved_tokens", 0)},
             "security": {"input": "passed", "output": "passed"},
