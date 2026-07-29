@@ -6,7 +6,9 @@ from typing import Optional
 
 import streamlit as st
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_root / "src"))
+sys.path.insert(0, str(_root))
 
 from brompt.core.engine import BromptEngine
 from brompt.hooks import hooks_manager, LoggingHook, TimingHook

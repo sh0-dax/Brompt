@@ -45,10 +45,36 @@ BASE_CSS = """
 }
 * { font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; }
 code, pre, .mono, kbd { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, monospace; }
-.stApp { background: var(--bg-root); }
+.stApp, .stApp > div:first-child, [data-testid="stAppViewContainer"] {
+    background: var(--bg-root) !important;
+}
+.stApp > div:first-child > div:first-child {
+    background: var(--bg-root) !important;
+}
 a { color: var(--accent); text-decoration: none; }
 a:hover { color: var(--accent-hover); }
 ::selection { background: var(--accent-soft); color: var(--text-primary); }
+"""
+
+STREAMLIT_CSS = """
+#root > div:first-child > div:first-child > div:first-child { overflow: hidden; }
+[data-testid="stAppViewContainer"] > section:first-child { padding: 0 !important; }
+.main > div:first-child > div:first-child { max-width: 100% !important; padding: 0 !important; }
+.stMainBlockContainer, .stAppViewBlockContainer, .block-container {
+    max-width: 100% !important; padding: 0 !important;
+}
+.appview-container .main .block-container { padding: 0 !important; max-width: 100% !important; }
+header[data-testid="stHeader"] { display: none !important; }
+#MainMenu { visibility: hidden !important; height: 0 !important; }
+footer { display: none !important; }
+.stAppDeployButton { display: none !important; }
+[data-testid="stStatusWidget"] { display: none !important; }
+.stApp > div:first-child > div:first-child > div:first-child > div:first-child { padding: 0 !important; }
+section[data-testid="stSidebar"] > div:first-child { padding-top: 0 !important; }
+[data-testid="stSidebarContent"] { padding: 0 !important; }
+[data-testid="column"] { gap: 0 !important; }
+.st-emotion-cache-1r4qj8v, .st-emotion-cache-keje6m { padding: 0 !important; gap: 0 !important; }
+div[data-testid="stVerticalBlock"] { gap: 8px !important; }
 """
 
 LAYOUT_CSS = """
@@ -140,6 +166,14 @@ BUTTON_CSS = """
 """
 
 FORM_CSS = """
+[data-testid="stMetricValue"] { font-size: 28px !important; font-weight: 700 !important; color: var(--text-primary) !important; }
+[data-testid="stMetricLabel"] { font-size: 12px !important; font-weight: 600 !important; color: var(--text-muted) !important; text-transform: uppercase !important; letter-spacing: .06em !important; }
+[data-testid="stMetricDelta"] { font-size: 12px !important; }
+[data-testid="stExpander"] { border: 1px solid var(--border) !important; border-radius: var(--radius-lg) !important; background: var(--bg-surface) !important; }
+[data-testid="stExpander"] summary { font-weight: 600 !important; font-size: 13px !important; }
+[data-testid="stDataFrame"] { border: 1px solid var(--border) !important; border-radius: var(--radius-lg) !important; }
+.st-bp, .st-bq, .st-br, .st-cf { color: var(--text-secondary) !important; }
+.stTextInput, .stSelectbox, .stTextArea { margin-bottom: 4px; }
 .brompt-input, input:not([type]), input[type="text"], input[type="password"], textarea, select, .stSelectbox div[data-baseweb="select"] > div {
     background: var(--bg-surface-2) !important; border: 1px solid var(--border) !important;
     color: var(--text-primary) !important; border-radius: var(--radius-md) !important;
@@ -202,20 +236,43 @@ STATUS_CSS = """
 """
 
 RESPONSIVE_CSS = """
-@media (max-width: 1200px) { .brompt-metric { min-height: 96px; } .brompt-metric-value { font-size: 24px; } }
-@media (max-width: 768px) {
+@media (max-width: 1200px) {
+    .brompt-metric { min-height: 96px; }
+    .brompt-metric-value { font-size: 24px; }
+}
+@media (max-width: 992px) {
     .brompt-main { padding: 0 16px 24px; }
-    [data-testid="stSidebar"] { width: 100% !important; min-width: 100% !important; }
+    [data-testid="stSidebar"] { width: 248px !important; min-width: 248px !important; }
     .brompt-topbar { height: 48px; flex-wrap: wrap; gap: 4px; }
     .brompt-metric { min-height: 80px; }
     .brompt-metric-value { font-size: 20px; }
+    .sidebar-footer { position: relative; }
+}
+@media (max-width: 768px) {
+    .brompt-main { padding: 0 10px 16px; }
+    [data-testid="stSidebar"] { width: 100% !important; min-width: 100% !important; }
+    .brompt-topbar { height: auto; padding: 8px 0; }
+    .brompt-metric { min-height: 72px; }
+    .brompt-metric-value { font-size: 18px; }
 }
 """
 
+MISC_CSS = """
+[data-testid="stTabs"] { border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+[data-testid="stTabs"] button { font-size: 13px !important; color: var(--text-muted) !important; }
+[data-testid="stTabs"] button[aria-selected="true"] { color: var(--accent) !important; }
+.stCodeBlock { background: var(--bg-surface-2) !important; border: 1px solid var(--border) !important; border-radius: var(--radius-md) !important; }
+.stChatFloatingInputContainer { background: var(--bg-surface) !important; border-top: 1px solid var(--border) !important; }
+[data-testid="chatInput"] { background: var(--bg-surface-2) !important; border: 1px solid var(--border) !important; border-radius: var(--radius-md) !important; color: var(--text-primary) !important; }
+.stChatMessage { background: transparent !important; border: none !important; }
+[data-testid="stChatMessageContent"] { background: var(--bg-surface) !important; border: 1px solid var(--border-soft) !important; border-radius: var(--radius-lg) !important; padding: 12px 14px !important; }
+.stSpinner > div { border-color: var(--accent) transparent transparent transparent !important; }
+"""
+
 GLOBAL_CSS = "\n".join([
-    BASE_CSS, LAYOUT_CSS, SIDEBAR_CSS, TOPBAR_CSS, CARD_CSS,
+    BASE_CSS, STREAMLIT_CSS, LAYOUT_CSS, SIDEBAR_CSS, TOPBAR_CSS, CARD_CSS,
     METRIC_CARD_CSS, BUTTON_CSS, FORM_CSS, TABLE_CSS, TRACE_CSS,
-    STATUS_CSS, RESPONSIVE_CSS,
+    STATUS_CSS, MISC_CSS, RESPONSIVE_CSS,
 ])
 
 # ────────────────────────────────────────────── DESIGN SYSTEM ────────────────
