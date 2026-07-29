@@ -214,35 +214,73 @@ class BromptUIAdapter:
         query, ctx = hooks_manager.before_execute(prompt, None)
         history = e.memory.get_history()
 
+        baseline_input = len(" ".join(m.get("content", "") for m in history)) // 4
+
         savings = {}
+        override_msgs = None
         if st.session_state.optimization_enabled:
             if st.session_state.optimizer is None:
                 from brompt.optimizer import TokenOptimizer
                 st.session_state.optimizer = TokenOptimizer()
             is_first = not st.session_state.system_sent
-            raw_tpl = "Process the following input and provide the best possible response."
-            _, savings = st.session_state.optimizer.build_optimized_prompt(
-                system_prompt="", user_input=prompt, template_content=raw_tpl,
-                messages_history=history, is_first_message=is_first,
+            opt = st.session_state.optimizer
+            override_msgs, savings = opt.build_api_messages(
+                system_prompt="",
+                user_input=prompt,
+                template_content="Process the following input and provide the best possible response.",
+                messages_history=history,
+                is_first_message=is_first,
+                max_context=st.session_state.get("max_context_messages", 4),
             )
             st.session_state.system_sent = True
             st.session_state.total_saved_tokens += savings.get("saved_tokens", 0)
+            baseline_input = savings.get("original_tokens", baseline_input)
+
+        if override_msgs:
+            saved_memory = e.memory.get_history()
+            e.memory.clear()
+            for m in override_msgs[:-1]:
+                e.memory.add_turn(m["role"], m["content"])
+            last_user_content = override_msgs[-1]["content"]
 
         t0 = _time.time()
-        result: ER = e.execute(query, ctx)
+        result: ER = e.execute(
+            last_user_content if override_msgs else query, ctx,
+        )
         total_ms = (_time.time() - t0) * 1000
+
+        if override_msgs:
+            e.memory.clear()
+            for m in saved_memory:
+                e.memory.add_turn(m["role"], m["content"])
+            if result.is_secure and result.data.get("llm_response"):
+                e.memory.add_turn("assistant", result.data["llm_response"])
+
         result = hooks_manager.after_execute(result)
 
         elapsed_ms = e._last_latency_ms or total_ms
-        completion_tokens = e._last_tokens_used
-        all_text = " ".join(m["content"] for m in history)
-        prompt_tokens = len(all_text) // 4
-        plain_prompt_tokens = len(prompt) // 4
+        actual_input_tokens = sum(len(m.get("content",""))//4 for m in (override_msgs or []))
+        output_tokens = getattr(e, '_last_completion_tokens', len(result.data.get("llm_response",""))//4 if result.is_secure else 0)
         provider_name = type(e.provider).__name__ if e.provider else "None"
-        cost = estimate_cost(provider_name, prompt_tokens, completion_tokens)
-        plain_cost = estimate_cost(provider_name, plain_prompt_tokens, completion_tokens)
-        cost_saved = savings.get("saved_tokens", 0) / 1000 * 0.03
+
+        _calc = None
+        try:
+            from brompt.pricing import calculate_cost
+            _calc = calculate_cost
+        except ImportError:
+            pass
+        if _calc is None:
+            from brompt.pricing import estimate_cost as _ec
+            _calc = lambda p, m, i, o, c=0: _ec(p, i, o)  # type: ignore
+        actual_cost = _calc(provider_name, self.provider_model,
+                            actual_input_tokens, output_tokens)
+        baseline_cost = _calc(provider_name, self.provider_model,
+                              baseline_input, output_tokens)
+        cost_saved = max(0.0, baseline_cost - actual_cost)
         st.session_state.total_cost_saved += cost_saved
+
+        actual_saved = max(0, baseline_input - actual_input_tokens)
+        reduction_pct = (actual_saved / baseline_input * 100) if baseline_input > 0 else 0
 
         stages, total = _make_trace_stages(elapsed_ms)
         ne = {
@@ -251,12 +289,28 @@ class BromptUIAdapter:
             "provider": provider_name.lower(),
             "model": self.provider_model,
             "timing": {"total_ms": elapsed_ms, "provider_ms": stages[4]["time_ms"]},
-            "tokens": {"input": prompt_tokens, "output": completion_tokens,
-                       "saved": savings.get("saved_tokens", 0)},
+            "tokens": {
+                "input": actual_input_tokens,
+                "output": output_tokens,
+                "saved": savings.get("saved_tokens", 0),
+                "baseline_input": baseline_input,
+                "actual_saved": actual_saved,
+                "reduction_pct": round(reduction_pct, 2),
+            },
+            "optimization": {
+                "enabled": st.session_state.optimization_enabled,
+                "estimated_saved": savings.get("saved_tokens", 0),
+                "actual_saved": actual_saved,
+                "breakdown": savings.get("breakdown", {}),
+                "mode": savings.get("mode", "off"),
+            },
             "security": {"input": "passed", "output": "passed"},
             "audit": {"recorded": True, "verified": True},
-            "trace": stages, "savings_pct": savings.get("savings_percent", 0),
-            "cost": cost, "plain_cost": plain_cost, "cost_saved": cost_saved,
+            "trace": stages,
+            "savings_pct": savings.get("savings_percent", 0),
+            "cost": actual_cost,
+            "baseline_cost": baseline_cost,
+            "cost_saved": cost_saved,
             "msg": prompt[:40],
         }
         ne["response"] = result.data.get("llm_response", "") if result.is_secure else ""
@@ -374,9 +428,9 @@ def render_overview_page():
         total_tok = sum(e["tokens"]["input"] + e["tokens"]["output"] for e in hist)
         render_metric_card("Tokens", f"{total_tok:,}")
     with k4:
-        savings_list = [e.get("savings_pct", 0) for e in hist if e.get("savings_pct", 0) > 0]
+        savings_list = [e["tokens"]["reduction_pct"] for e in hist if e["tokens"]["reduction_pct"] > 0]
         avg_save = sum(savings_list) / max(len(savings_list), 1) if savings_list else 0
-        render_metric_card("Optimization", f"{avg_save:.0f}%" if avg_save else "—")
+        render_metric_card("Optimization", f"{avg_save:.1f}%" if avg_save else "—")
 
     col_l, col_r = st.columns([3, 2])
     with col_l:
@@ -445,8 +499,11 @@ def render_playground_page():
                     st.session_state._executing = False
                     if ne["response"]:
                         st.markdown(ne["response"])
-                        if ne["tokens"]["saved"] > 0:
-                            st.caption(f"⚡ Saved {ne['tokens']['saved']} tokens ({ne.get('savings_pct', 0):.0f}%)")
+                        actual_sv = ne["tokens"]["actual_saved"]
+                        if actual_sv > 0:
+                            st.caption(f"⚡ Saved {actual_sv} tokens ({ne['tokens']['reduction_pct']:.1f}%)")
+                        elif ne["tokens"]["saved"] > 0:
+                            st.caption(f"⚡ Estimated saving: {ne['tokens']['saved']} tokens (awaiting provider data)")
                         if ne["audit"]["recorded"]:
                             st.caption(f"🔒 Audited · {ne['timing']['total_ms']:.0f}ms · {ne['tokens']['output']} out")
                     elif ne["error"]:
@@ -464,7 +521,7 @@ def render_playground_page():
 
             with st.expander("Token Breakdown", expanded=False):
                 t = last["tokens"]
-                st.caption(f"Input: {t['input']}  |  Output: {t['output']}  |  Saved: {t['saved']}")
+                st.caption(f"Baseline: {t['baseline_input']:,}  |  Input: {t['input']:,}  |  Output: {t['output']:,}  |  Saved: {t['actual_saved']:,} ({t['reduction_pct']:.1f}%)")
                 st.caption(f"Cost: {_fmt_cost(last.get('cost', 0))}")
         else:
             render_empty_state("Awaiting execution",
@@ -690,7 +747,8 @@ def render_metrics_page():
 
         total_tok = df["input_tok"].sum() + df["output_tok"].sum()
         total_cost = sum(e.get("cost", 0) for e in hist)
-        saved_tok = sum(e["tokens"]["saved"] for e in hist)
+        saved_tok = sum(e["tokens"]["actual_saved"] for e in hist)
+        total_baseline = sum(e["tokens"]["baseline_input"] for e in hist)
 
         with st.expander("Token Analytics", expanded=True):
             c1, c2, c3 = st.columns(3)
@@ -698,15 +756,15 @@ def render_metrics_page():
             with c2: st.metric("Tokens Saved", f"{saved_tok:,}")
             with c3: st.metric("Total Cost", _fmt_cost(total_cost))
 
-            if saved_tok > 0:
-                reduction_pct = saved_tok / max(total_tok + saved_tok, 1) * 100
-                bar_w = max(20, min(100, int((total_tok - saved_tok) / max(total_tok, 1) * 100)))
-                before_w = max(20, min(100, int((total_tok + saved_tok) / max(total_tok + saved_tok, 1) * 100)))
+            if saved_tok > 0 and total_baseline > 0:
+                reduction_pct = saved_tok / max(total_baseline, 1) * 100
+                after_tok = max(1, total_baseline - saved_tok)
+                bar_w = max(20, min(100, int(after_tok / max(total_baseline, 1) * 100)))
                 st.markdown(f"""
                 <div style="margin:12px 0;font-size:12px">
-                    <div style="color:var(--text-muted);margin-bottom:4px">Before optimization</div>
+                    <div style="color:var(--text-muted);margin-bottom:4px">Baseline input</div>
                     <div style="height:20px;background:var(--bg-surface-3);border-radius:var(--radius-sm);overflow:hidden">
-                        <div style="width:{before_w}%;height:100%;background:var(--text-disabled);border-radius:var(--radius-sm)"></div>
+                        <div style="width:100%;height:100%;background:var(--text-disabled);border-radius:var(--radius-sm)"></div>
                     </div>
                     <div style="color:var(--text-muted);margin:8px 0 4px">After optimization</div>
                     <div style="height:20px;background:var(--bg-surface-3);border-radius:var(--radius-sm);overflow:hidden">
@@ -714,7 +772,7 @@ def render_metrics_page():
                     </div>
                     <div style="display:flex;justify-content:space-between;margin-top:4px;color:var(--text-muted)">
                         <span>Saved: {saved_tok:,} tokens</span>
-                        <span style="color:var(--success)">-{reduction_pct:.0f}%</span>
+                        <span style="color:var(--success)">-{reduction_pct:.1f}%</span>
                     </div>
                 </div>""", unsafe_allow_html=True)
 
@@ -722,7 +780,8 @@ def render_metrics_page():
             if big:
                 avg_input = sum(e["tokens"]["input"] for e in big) / len(big)
                 avg_output = sum(e["tokens"]["output"] for e in big) / len(big)
-                st.caption(f"Avg input: {avg_input:.0f}  |  Avg output: {avg_output:.0f}")
+                avg_baseline = sum(e["tokens"]["baseline_input"] for e in big) / len(big)
+                st.caption(f"Avg baseline: {avg_baseline:.0f}  |  Avg input: {avg_input:.0f}  |  Avg output: {avg_output:.0f}")
     else:
         render_empty_state("No data yet", "Send prompts from Playground to see metrics.")
 

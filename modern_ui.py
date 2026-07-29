@@ -71,7 +71,7 @@ footer { display: none !important; }
 [data-testid="stStatusWidget"] { display: none !important; }
 .stApp > div:first-child > div:first-child > div:first-child > div:first-child { padding: 0 !important; }
 section[data-testid="stSidebar"] > div:first-child { padding-top: 0 !important; }
-[data-testid="stSidebarContent"] { padding: 0 !important; }
+[data-testid="stSidebarContent"] { padding: 0 !important; display: flex; flex-direction: column; }
 [data-testid="column"] { gap: 0 !important; }
 .st-emotion-cache-1r4qj8v, .st-emotion-cache-keje6m { padding: 0 !important; gap: 0 !important; }
 div[data-testid="stVerticalBlock"] { gap: 8px !important; }
@@ -88,24 +88,35 @@ SIDEBAR_CSS = """
     background: var(--bg-sidebar) !important;
     border-right: 1px solid var(--border) !important;
     width: 248px !important; min-width: 248px !important;
+    display: flex; flex-direction: column; height: 100vh;
+}
+[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+    flex: 1; overflow-y: auto;
+    display: flex; flex-direction: column;
+}
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+    flex: 1;
 }
 [data-testid="stSidebar"] .stButton button {
     background: transparent; border: none; color: var(--text-secondary);
-    text-align: left; font-size: 13px; padding: 6px 12px; border-radius: var(--radius-sm);
+    text-align: left; font-size: 13px; padding: 5px 12px; border-radius: var(--radius-sm);
     transition: var(--transition); font-weight: 400;
 }
 [data-testid="stSidebar"] .stButton button:hover {
     background: var(--bg-surface-2); color: var(--text-primary);
 }
-[data-testid="stSidebar"] .stButton button[data-active="true"],
+[data-testid="stSidebar"] .stButton button[kind="primary"] {
+    background: var(--accent-soft); color: var(--accent); font-weight: 500;
+}
 [data-testid="stSidebar"] .stButton button:active {
     background: var(--accent-soft); color: var(--accent);
 }
+.sidebar-scroll { overflow-y: auto; flex: 1; padding-bottom: 80px; }
 .sidebar-brand { color: var(--text-primary); font-size: 16px; font-weight: 700; padding: 16px 12px 2px; letter-spacing: -.3px; }
 .sidebar-subtitle { color: var(--text-muted); font-size: 11px; padding: 0 12px 16px; font-weight: 500; }
-.sidebar-section { color: var(--text-disabled); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; padding: 12px 12px 4px; }
-.sidebar-divider { border: none; border-top: 1px solid var(--border-soft); margin: 8px 12px; }
-.sidebar-footer { position: absolute; bottom: 0; left: 0; right: 0; padding: 12px; border-top: 1px solid var(--border-soft); font-size: 12px; }
+.sidebar-section { color: var(--text-disabled); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; padding: 12px 12px 3px; }
+.sidebar-divider { border: none; border-top: 1px solid var(--border-soft); margin: 6px 12px; }
+.sidebar-footer { position: sticky; bottom: 0; left: 0; right: 0; padding: 10px 12px; border-top: 1px solid var(--border-soft); font-size: 12px; background: var(--bg-sidebar); }
 .sidebar-footer-status { display: flex; align-items: center; gap: 8px; color: var(--text-muted); }
 .sidebar-footer-provider { color: var(--text-secondary); font-size: 11px; margin-top: 2px; }
 """
@@ -255,6 +266,7 @@ DRAWER_CSS = """
 .brompt-drawer-label { font-size: 11px; font-weight: 600; color: var(--text-disabled); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
 .brompt-drawer-value { font-size: 14px; color: var(--text-primary); }
 .brompt-drawer-divider { border: none; border-top: 1px solid var(--border-soft); margin: var(--space-4) 0; }
+.brompt-drawer-trace-row { display: flex; align-items: center; gap: 10px; }
 """
 
 KEYBOARD_CSS = """
@@ -276,11 +288,10 @@ RESPONSIVE_CSS = """
 }
 @media (max-width: 992px) {
     .brompt-main { padding: 0 16px 24px; }
-    [data-testid="stSidebar"] { width: 248px !important; min-width: 248px !important; }
+    [data-testid="stSidebar"] { width: 220px !important; min-width: 220px !important; }
     .brompt-topbar { height: 48px; flex-wrap: wrap; gap: 4px; }
     .brompt-metric { min-height: 80px; }
     .brompt-metric-value { font-size: 20px; }
-    .sidebar-footer { position: relative; }
 }
 @media (max-width: 768px) {
     .brompt-main { padding: 0 10px 16px; }
@@ -363,11 +374,11 @@ def inject_global_css(theme: str = "dark"):
 # ────────────────────────────────────────────── LAYOUT ───────────────────────
 
 PAGE_ICONS = {
-    "overview": "▣", "playground": "◉", "sessions": "◫",
-    "providers": "◈", "templates": "◇", "config": "⚙",
-    "security": "🛡", "audit": "⌁",
-    "metrics": "◉", "traces": "⌁",
-    "settings": "⚙",
+    "overview": "◎", "playground": "▶", "sessions": "☰",
+    "providers": "⬢", "templates": "◇", "config": "⚙",
+    "security": "🛡", "audit": "⊟",
+    "metrics": "◈", "traces": "↗",
+    "settings": "⚒",
 }
 
 PAGE_LABELS = {
@@ -696,7 +707,7 @@ def render_execution_drawer(execution: dict, on_close_key: str = "close_drawer")
         </div>
         <div class="brompt-drawer-section">
             <div class="brompt-drawer-label">Tokens</div>
-            <div class="brompt-drawer-value">Input: {execution.get('tokens',{}).get('input',0):,} · Output: {execution.get('tokens',{}).get('output',0):,} · Saved: {execution.get('tokens',{}).get('saved',0):,}</div>
+            <div class="brompt-drawer-value">Baseline: {execution.get('tokens',{}).get('baseline_input',0):,} · Input: {execution.get('tokens',{}).get('input',0):,} · Output: {execution.get('tokens',{}).get('output',0):,} · Saved: {execution.get('tokens',{}).get('actual_saved',0):,} ({execution.get('tokens',{}).get('reduction_pct',0):.1f}%)</div>
         </div>
         <div class="brompt-drawer-section">
             <div class="brompt-drawer-label">Security</div>
@@ -712,7 +723,20 @@ def render_execution_drawer(execution: dict, on_close_key: str = "close_drawer")
     """)
     stages = execution.get("trace", [])
     for s in stages:
-        render_trace_step(s.get("name",""), s.get("status","completed"), s.get("time_ms",0))
+        sn = s.get("name","")
+        ss = s.get("status","completed")
+        stm = s.get("time_ms",0)
+        dot_cls = {"completed":"pass","running":"run","error":"fail","pending":"wait"}.get(ss,"wait")
+        mk = "✓" if ss == "completed" else "✗" if ss == "error" else "→"
+        tstr = f"{stm:.0f}ms" if stm > 0 else "<1ms"
+        st.markdown(f"""
+        <div class="brompt-drawer-section">
+            <div class="brompt-drawer-trace-row">
+                <span class="brompt-trace-dot {dot_cls}" style="width:18px;height:18px;font-size:9px">{mk}</span>
+                <span style="flex:1;font-size:13px;color:var(--text-secondary)">{sn}</span>
+                <span style="font-size:12px;color:var(--text-muted);font-family:'JetBrains Mono',monospace">{tstr}</span>
+            </div>
+        </div>""", unsafe_allow_html=True)
     st.markdown("</div></div>", unsafe_allow_html=True)
 
     if st.button("Close", key=on_close_key):

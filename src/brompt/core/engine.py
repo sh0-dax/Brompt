@@ -75,6 +75,8 @@ class BromptEngine:
         self.state_id = f"state_{uuid.uuid4().hex[:8]}"
         self._last_latency_ms = 0.0
         self._last_tokens_used = 0
+        self._last_prompt_tokens = 0
+        self._last_completion_tokens = 0
 
     # -- shared pipeline steps -------------------------------------------------
 
@@ -141,26 +143,46 @@ class BromptEngine:
         context: dict[str, Any] | None = None,
         caller_id: str = "default",
         system_prompt: str | None = None,
+        override_messages: list[dict[str, str]] | None = None,
     ) -> ExecutionResult:
         """Executes query payload through security filters, rate limiting,
-        bounded memory, and (if configured) the upstream LLM provider."""
+        bounded memory, and (if configured) the upstream LLM provider.
+
+        Parameters
+        ----------
+        override_messages :
+            If set, these messages are sent to the provider INSTEAD of
+            ``self.memory.get_history()``.  The original ``user_query``
+            is still sanitised, memory-tracked, and stored in chat history
+            so the UI always shows what the user actually typed.
+        """
         try:
             _, output_payload = self._pre_process(user_query, context, caller_id)
         except Exception as err:
             return self._handle_rejection(err)
 
         reply = None
+        self._last_prompt_tokens = 0
+        self._last_completion_tokens = 0
         if self.provider is not None:
             try:
+                messages_to_send = (
+                    override_messages
+                    if override_messages is not None
+                    else self.memory.get_history()
+                )
+                self._last_prompt_tokens = sum(
+                    len(m.get("content", "")) // 4 for m in messages_to_send
+                ) if messages_to_send else 0
                 t0 = time.time()
                 if self.circuit_breaker is not None:
                     reply = self.circuit_breaker.call_sync(
                         self.provider.generate,
-                        args=(self.memory.get_history(),),
+                        args=(messages_to_send,),
                         kwargs={"system": system_prompt},
                     )
                 else:
-                    reply = self.provider.generate(self.memory.get_history(), system=system_prompt)
+                    reply = self.provider.generate(messages_to_send, system=system_prompt)
                 self._last_latency_ms = (time.time() - t0) * 1000
                 reply = SecurityEngine.sanitize_output(reply)
                 self.memory.add_turn("assistant", reply)
@@ -177,7 +199,8 @@ class BromptEngine:
                     error_message=f"Provider error: {err}",
                 )
 
-        self._last_tokens_used = len(reply) // 4 if reply else 0
+        self._last_completion_tokens = len(reply) // 4 if reply else 0
+        self._last_tokens_used = self._last_prompt_tokens + self._last_completion_tokens
         self.audit.record("execute", self.state_id, True,
                           latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used)
         return ExecutionResult(state_id=self.state_id, is_secure=True, data=output_payload)
@@ -190,14 +213,19 @@ class BromptEngine:
         context: dict[str, Any] | None = None,
         caller_id: str = "default",
         system_prompt: str | None = None,
+        override_messages: list[dict[str, str]] | None = None,
     ) -> ExecutionResult:
         try:
             _, output_payload = self._pre_process(user_query, context, caller_id)
         except Exception as err:
             return self._handle_rejection(err)
 
-        history = self.memory.get_history()
+        history = override_messages if override_messages is not None else self.memory.get_history()
         reply = None
+        self._last_prompt_tokens = sum(
+            len(m.get("content", "")) // 4 for m in (history or [])
+        )
+        self._last_completion_tokens = 0
         try:
             t0 = time.time()
             if self.async_provider is not None:
@@ -233,7 +261,8 @@ class BromptEngine:
             output_payload["llm_response"] = reply
             output_payload["provider_used"] = True
 
-        self._last_tokens_used = len(reply) // 4 if reply else 0
+        self._last_completion_tokens = len(reply) // 4 if reply else 0
+        self._last_tokens_used = self._last_prompt_tokens + self._last_completion_tokens
         self.audit.record("execute", self.state_id, True,
                           latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used)
         return ExecutionResult(state_id=self.state_id, is_secure=True, data=output_payload)

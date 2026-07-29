@@ -10,16 +10,29 @@ class TokenOptimizer:
         return max(1, len(text) // 4)
 
     @staticmethod
-    def compress_context(messages: list, max_messages: int = 4) -> list:
+    def _is_code_or_config(content: str) -> bool:
+        code_indicators = ("```", "def ", "class ", "import ", "function", "const ", "var ", "SELECT ", "{" )
+        return any(content.strip().startswith(ind) or content.strip().startswith(ind.lower()) for ind in code_indicators)
+
+    @classmethod
+    def compress_context(cls, messages: list, max_messages: int = 4) -> list:
         if not messages:
             return []
         recent = messages[-max_messages:]
         compressed = []
         for msg in recent:
             content = msg.get("content", "")
+            role = msg.get("role", "user")
             if len(content) > 500:
-                content = content[:250] + " [...] " + content[-150:]
-            compressed.append({"role": msg.get("role", "user"), "content": content})
+                if cls._is_code_or_config(content):
+                    content = content[:500] + "\n[... truncation preserved code prefix ...]"
+                else:
+                    lines = content.split("\n")
+                    if len(lines) > 20:
+                        content = "\n".join(lines[:10]) + "\n[...]\n" + "\n".join(lines[-5:])
+                    else:
+                        content = content[:250] + " [...] " + content[-150:]
+            compressed.append({"role": role, "content": content})
         return compressed
 
     @staticmethod
@@ -61,10 +74,13 @@ class TokenOptimizer:
     ) -> tuple[list[dict], dict]:
         original_tokens = 0
         messages = []
+        breakdown = {}
 
+        system_cost = 0
         if is_first_message and system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-            original_tokens += self.estimate_tokens(system_prompt)
+            system_cost = self.estimate_tokens(system_prompt)
+            original_tokens += system_cost
         elif system_prompt:
             original_tokens += self.estimate_tokens(system_prompt)
 
@@ -79,7 +95,10 @@ class TokenOptimizer:
                 recent = messages_history[-max_context:]
                 for msg in recent:
                     content = msg.get("content", "")
-                    if len(content) > 500:
+                    raw_len = len(content)
+                    if raw_len > 500:
+                        trimmed = raw_len - (250 + 150)
+                        breakdown["context_trimming"] = breakdown.get("context_trimming", 0) + trimmed
                         content = content[:250] + " [...] " + content[-150:]
                     messages.append({
                         "role": msg.get("role", "user"),
@@ -98,6 +117,7 @@ class TokenOptimizer:
             "optimized_tokens": optimized_tokens,
             "saved_tokens": saved_tokens,
             "savings_percent": (saved_tokens / original_tokens * 100) if original_tokens > 0 else 0,
+            "breakdown": breakdown,
         }
 
         return messages, stats
@@ -109,9 +129,11 @@ class TokenOptimizer:
         template_content: str,
         messages_history: Optional[list] = None,
         is_first_message: bool = True,
+        mode: str = "balanced",
     ) -> tuple[str, dict]:
         original_tokens = 0
         parts = []
+        breakdown = {}
 
         if is_first_message and system_prompt:
             parts.append(system_prompt)
@@ -127,10 +149,15 @@ class TokenOptimizer:
             original_tokens += history_tokens
 
             if not is_first_message:
-                if len(messages_history) > 6:
+                if len(messages_history) > 6 and mode in ("balanced", "aggressive"):
                     summary = self.summarize_history(messages_history)
                     if summary:
                         parts.append(summary)
+                        hist_len_before = sum(self.estimate_tokens(m.get("content","")) for m in messages_history)
+                        hist_len_after = self.estimate_tokens(summary)
+                        hist_saved = max(0, hist_len_before - hist_len_after)
+                        if hist_saved:
+                            breakdown["history_compression"] = breakdown.get("history_compression", 0) + hist_saved
 
                 compressed = self.compress_context(messages_history)
                 context_text = "\n".join(
@@ -142,9 +169,20 @@ class TokenOptimizer:
         parts.append(template_content)
         original_tokens += self.estimate_tokens(template_content) + self.estimate_tokens(user_input)
 
-        final_prompt = "\n\n".join(p for p in parts if p)
-        final_prompt = self.remove_redundant_whitespace(final_prompt)
+        before_clean = "\n\n".join(p for p in parts if p)
+        before_tok = self.estimate_tokens(before_clean)
+
+        final_prompt = self.remove_redundant_whitespace(before_clean)
+        after_ws = self.estimate_tokens(final_prompt)
+        ws_saved = before_tok - after_ws
+        if ws_saved > 0:
+            breakdown["whitespace_cleanup"] = breakdown.get("whitespace_cleanup", 0) + ws_saved
+
         final_prompt = self.remove_duplicate_content(final_prompt)
+        after_dedup = self.estimate_tokens(final_prompt)
+        dup_saved = after_ws - after_dedup
+        if dup_saved > 0:
+            breakdown["duplicate_removal"] = breakdown.get("duplicate_removal", 0) + dup_saved
 
         optimized_tokens = self.estimate_tokens(final_prompt)
         saved_tokens = max(0, original_tokens - optimized_tokens)
@@ -154,6 +192,8 @@ class TokenOptimizer:
             "optimized_tokens": optimized_tokens,
             "saved_tokens": saved_tokens,
             "savings_percent": (saved_tokens / original_tokens * 100) if original_tokens > 0 else 0,
+            "breakdown": breakdown,
+            "mode": mode,
         }
 
         return final_prompt, stats
