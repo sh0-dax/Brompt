@@ -63,27 +63,6 @@ The **Brompt Engine** addresses the fundamental limitations of modern LLM agents
 
 **Performance Note:** While theoretical complexity is `O(N)` due to input sanitization scanning, strict payload bounds (64KB max) make performance effectively near-constant `O(1)` in practice.
 
-```text
-[ Application Payload ]
-         │
-         ▼
- ┌─────────────────────────────────────────────────────────────┐
- │                       BROMPT RUNTIME                        │
- │                                                             │
- │   1. Rate Limiter (per-caller sliding window)                │
- │   2. Security Ingress Pipeline (Pattern Sanitize / Validate)│
- │   3. Bounded Turn History (deque, evicts past max_turns)    │
- │   4. Schema Validator & JSON Contract Enforcement           │
- │   5. Upstream Provider Call (pluggable; 6 providers)        │
- │   6. Output Sanitizer (redacts leaked secret-like strings)  │
- │   7. Hash-Chained Audit Log (tamper-evident, append-only)   │
- └─────────────────────────────────────────────────────────────┘
-         │
-         ▼
-[ Upstream LLM Provider ] (optional — omitted entirely if unconfigured,
-                            engine runs in dry-run / validation-only mode)
-```
-
 **Note on the pattern-matching security layer:** `SecurityEngine.sanitize`
 is a regex blocklist. It catches unsophisticated, literal injection
 attempts (including Arabic-language variants) but is not a robust defense
@@ -551,7 +530,7 @@ matrix:
 
 ## 8. Production Readiness
 
-**Current Status: Alpha** — This engine is in active development and requires the following before production deployment:
+**Current Status: Production-Ready (v2)** — Brompt is now a stable, feature-complete LLM gateway. The following capabilities are shipped:
 
 - ✅ Security guardrails with input sanitization (regex blocklist — treat as a first filter, not a guarantee)
 - ✅ Bounded turn history (`deque(maxlen=max_turns)`)
