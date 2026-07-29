@@ -50,6 +50,58 @@ class TokenOptimizer:
                 unique.append(line)
         return "\n".join(unique)
 
+    def build_api_messages(
+        self,
+        system_prompt: str,
+        user_input: str,
+        template_content: str,
+        messages_history: Optional[list] = None,
+        is_first_message: bool = True,
+        max_context: int = 4,
+    ) -> tuple[list[dict], dict]:
+        original_tokens = 0
+        messages = []
+
+        if is_first_message and system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+            original_tokens += self.estimate_tokens(system_prompt)
+        elif system_prompt:
+            original_tokens += self.estimate_tokens(system_prompt)
+
+        if messages_history:
+            history_tokens = sum(
+                self.estimate_tokens(m.get("content", ""))
+                for m in messages_history
+            )
+            original_tokens += history_tokens
+
+            if not is_first_message and max_context > 0:
+                recent = messages_history[-max_context:]
+                for msg in recent:
+                    content = msg.get("content", "")
+                    if len(content) > 500:
+                        content = content[:250] + " [...] " + content[-150:]
+                    messages.append({
+                        "role": msg.get("role", "user"),
+                        "content": content,
+                    })
+
+        current_content = template_content + "\n\n" + user_input
+        messages.append({"role": "user", "content": current_content})
+        original_tokens += self.estimate_tokens(template_content) + self.estimate_tokens(user_input)
+
+        optimized_tokens = sum(self.estimate_tokens(m["content"]) for m in messages)
+        saved_tokens = max(0, original_tokens - optimized_tokens)
+
+        stats = {
+            "original_tokens": original_tokens,
+            "optimized_tokens": optimized_tokens,
+            "saved_tokens": saved_tokens,
+            "savings_percent": (saved_tokens / original_tokens * 100) if original_tokens > 0 else 0,
+        }
+
+        return messages, stats
+
     def build_optimized_prompt(
         self,
         system_prompt: str,

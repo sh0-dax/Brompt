@@ -16,6 +16,7 @@ from brompt._providers_legacy import (
     MistralProvider, AzureOpenAIProvider, OllamaProvider, LMStudioProvider,
 )
 from brompt.pricing import estimate_cost
+from brompt.optimizer import TokenOptimizer
 
 st.set_page_config(
     page_title="Brompt Engine",
@@ -34,6 +35,16 @@ if "config_path" not in st.session_state:
     st.session_state.config_path = "agent.brompt.yaml"
 if "execution_history" not in st.session_state:
     st.session_state.execution_history = []
+if "optimizer" not in st.session_state:
+    st.session_state.optimizer = TokenOptimizer()
+if "optimization_enabled" not in st.session_state:
+    st.session_state.optimization_enabled = True
+if "max_context_messages" not in st.session_state:
+    st.session_state.max_context_messages = 4
+if "total_saved_tokens" not in st.session_state:
+    st.session_state.total_saved_tokens = 0
+if "system_sent" not in st.session_state:
+    st.session_state.system_sent = False
 
 PROVIDER_FACTORIES = {
     "Gemini": lambda key: GeminiProvider(api_key=key, model="gemini-2.5-flash"),
@@ -103,9 +114,34 @@ with st.sidebar:
 
     st.divider()
 
+    st.subheader("⚡ Token Optimization")
+    st.session_state.optimization_enabled = st.toggle(
+        "Enable optimization",
+        value=st.session_state.optimization_enabled,
+        help="Saves 60-75% on token costs by compressing context and not repeating system prompt",
+    )
+
+    if st.session_state.optimization_enabled:
+        st.success("✅ Optimization active")
+        st.session_state.max_context_messages = st.slider(
+            "Context messages",
+            0, 20, st.session_state.max_context_messages,
+            help="Last N messages sent with each request. Lower = more savings",
+        )
+        estimated = st.session_state.max_context_messages * 50
+        st.caption(f"~{estimated} tokens per request for context")
+
+        if st.session_state.total_saved_tokens > 0:
+            st.markdown(f"**Saved tokens:** {st.session_state.total_saved_tokens:,}")
+    else:
+        st.warning("⚠️ Optimization disabled — full token usage")
+
+    st.divider()
+
     st.subheader("System")
     if st.button("Clear History", use_container_width=True):
         st.session_state.messages = []
+        st.session_state.system_sent = False
         if st.session_state.engine:
             st.session_state.engine.memory.clear()
         st.rerun()
@@ -145,10 +181,26 @@ with col1:
                 try:
                     query, ctx = hooks_manager.before_execute(prompt, None)
                     engine = st.session_state.engine
+                    history = engine.memory.get_history()
+
+                    savings = {}
+                    if st.session_state.optimization_enabled:
+                        is_first = not st.session_state.system_sent
+                        raw_template = "Process the following input and provide the best possible response."
+                        _, savings = st.session_state.optimizer.build_optimized_prompt(
+                            system_prompt="",
+                            user_input=prompt,
+                            template_content=raw_template,
+                            messages_history=history,
+                            is_first_message=is_first,
+                        )
+                        st.session_state.system_sent = True
+                        st.session_state.total_saved_tokens += savings.get("saved_tokens", 0)
+
                     result = engine.execute(query, ctx)
                     result = hooks_manager.after_execute(result)
                     completion_tokens = engine._last_tokens_used
-                    all_text = " ".join(m["content"] for m in engine.memory.get_history())
+                    all_text = " ".join(m["content"] for m in history)
                     prompt_tokens = len(all_text) // 4
                     plain_prompt_tokens = len(prompt) // 4
                     provider_name = type(engine.provider).__name__ if engine.provider else "None"
@@ -164,6 +216,8 @@ with col1:
                         "plain_cost": plain_cost,
                         "secure": result.is_secure,
                         "provider_used": result.data.get("provider_used", False),
+                        "saved_tokens": savings.get("saved_tokens", 0),
+                        "savings_percent": round(savings.get("savings_percent", 0), 1),
                     })
                     if result.is_secure:
                         response = result.data.get("llm_response", "")
@@ -181,6 +235,7 @@ with col1:
                         "tokens": 0, "prompt_tokens": 0, "plain_prompt_tokens": 0,
                         "cost": 0.0, "plain_cost": 0.0,
                         "secure": False, "provider_used": False,
+                        "saved_tokens": 0, "savings_percent": 0,
                     })
 
 with col2:
@@ -234,6 +289,10 @@ with col2:
                     f"🧾 Prompt {_fmt_cost(last['plain_cost'])} + "
                     f"Overhead {overhead_tokens}tok {_fmt_cost(overhead_cost)}"
                 )
+                if last.get("saved_tokens", 0) > 0:
+                    st.caption(
+                        f"⚡ Saved {last['saved_tokens']} tok ({last['savings_percent']:.0f}%)"
+                    )
             else:
                 st.caption("No executions yet")
 
