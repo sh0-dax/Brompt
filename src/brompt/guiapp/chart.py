@@ -17,7 +17,7 @@ import math
 from collections import deque
 from tkinter import Canvas
 
-from .theme import BG, BORDER, CYAN, GREEN, MUTED, RED, TEXT, YELLOW, CHART_HISTORY_LEN
+from .theme import BG, BG_CARD, BORDER, CYAN, GREEN, MUTED, RED, TEXT, YELLOW, CHART_HISTORY_LEN
 
 CHART_TYPES = ("bar", "line", "area", "stacked", "donut")
 DATA_SERIES = ("activity", "latency", "tokens")

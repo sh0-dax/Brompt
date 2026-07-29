@@ -34,7 +34,7 @@ class ProviderConfig:
             env_key_map = {
                 ProviderType.OPENAI: "OPENAI_API_KEY",
                 ProviderType.ANTHROPIC: "ANTHROPIC_API_KEY",
-                ProviderType.GOOGLE: "GOOGLE_API_KEY",
+                ProviderType.GOOGLE: "GEMINI_API_KEY",
             }
             env_var = env_key_map.get(self.type)
             if env_var:

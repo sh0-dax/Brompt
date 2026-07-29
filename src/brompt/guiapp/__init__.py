@@ -278,6 +278,9 @@ class BromptWidget:
             c["settings_frame"].pack(fill=tk.BOTH, expand=True)
             c["settings_canvas"].pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             c["settings_scrollbar"].pack(side=tk.RIGHT, fill=tk.Y)
+            self._load_config_into_editor()
+            self.content["provider_var"].set(self._provider_type)
+            self.content["api_var"].set(self._api_key)
 
     def _update_tab_style(self, active):
         for name, btn in self.tab_buttons.items():
@@ -343,6 +346,9 @@ class BromptWidget:
 
     def _on_provider_change(self, event=None):
         self._provider_type = self.content["provider_var"].get()
+        self._api_key = self.content["api_var"].get()
+        self._backend = None
+        self.status_label.configure(text="● configured", fg=YELLOW)
 
     def _on_template_change(self, event=None):
         self._selected_template = self.content["template_var"].get()
@@ -399,6 +405,7 @@ class BromptWidget:
         """Create BackendPromptWidget if not yet created."""
         if self._backend is not None:
             return True
+        self._api_key = self.content["api_var"].get()
         factory = PROVIDER_FACTORIES.get(self._provider_type)
         if not factory:
             self._append_chat("  ❌ Unknown provider\n")
@@ -588,8 +595,26 @@ class BromptWidget:
         lt.configure(state=tk.DISABLED)
 
     # ------------------------------------------------------------------
-    # Phase 5: Settings — save config
+    # Phase 5: Settings — load/save config
     # ------------------------------------------------------------------
+
+    def _load_config_into_editor(self):
+        candidates = [Path.cwd(), Path(__file__).resolve().parent.parent.parent.parent]
+        config_path = None
+        for base in candidates:
+            p = base / "agent.brompt.yaml"
+            if p.exists():
+                config_path = p
+                break
+        if config_path is None:
+            config_path = Path.cwd() / "agent.brompt.yaml"
+        try:
+            text = config_path.read_text(encoding="utf-8")
+            c = self.content
+            c["config_text"].delete("1.0", tk.END)
+            c["config_text"].insert("1.0", text)
+        except Exception:
+            pass
 
     def _save_config(self):
         new_text = self.content["config_text"].get("1.0", tk.END).strip()

@@ -22,6 +22,9 @@ from modern_ui import (
     render_savings_badge, render_cached_badge, render_progress_bar,
     render_card, show_success_toast, show_savings_toast,
     show_error_toast, show_info_toast,
+    render_runtime_status_bar, render_stat_row,
+    render_execution_trace, render_provider_card,
+    render_audit_entries, render_security_status,
 )
 
 st.set_page_config(
@@ -169,6 +172,18 @@ render_hero_section(
     tokens_saved=st.session_state.total_saved_tokens,
     cost_saved=st.session_state.total_cost_saved,
     active_template=selected_template or "default",
+)
+
+eng = st.session_state.engine
+engine_online = eng is not None
+provider_model = getattr(getattr(eng, 'provider', None), 'model', 'gemini-2.5-flash') if engine_online else 'gemini-2.5-flash'
+latency_val = getattr(eng, '_last_latency_ms', 0.0) if engine_online else 0.0
+render_runtime_status_bar(
+    online=engine_online,
+    provider=st.session_state.get("provider_sel", "Gemini"),
+    model=provider_model,
+    latency_ms=latency_val,
+    secure=engine_online,
 )
 
 # --- main panel -------------------------------------------------------------
