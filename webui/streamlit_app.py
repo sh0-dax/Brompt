@@ -29,8 +29,10 @@ from modern_ui import (
     render_execution_row, render_trace_pipeline, render_trace_step,
     render_security_summary, render_audit_entry, render_audit_integrity,
     render_empty_state, render_error_state, render_loading_state,
-    render_command_palette, render_footer, show_success_toast,
-    show_error_toast, show_info_toast, PAGE_LABELS, COMMANDS,
+    render_command_palette, render_footer, render_execution_drawer,
+    render_time_range_selector, render_session_search, render_shortcuts_hint,
+    show_success_toast, show_error_toast, show_info_toast,
+    PAGE_LABELS, COMMANDS,
 )
 
 st.set_page_config(page_title="Brompt", page_icon="⚡", layout="wide",
@@ -48,6 +50,7 @@ DEFAULT_UI_STATE = {
     "optimization_enabled": True, "max_context_messages": 4,
     "total_saved_tokens": 0, "total_cost_saved": 0.0, "system_sent": False,
     "provider_sel": "Gemini", "api_key_input": "", "start_time": _time.time(),
+    "_executing": False, "execution_detail": None,
 }
 for key, val in DEFAULT_UI_STATE.items():
     st.session_state.setdefault(key, val)
@@ -299,6 +302,24 @@ with _init_col2:
                     show_error_toast(str(exc))
                     st.error(str(exc))
 
+# ────────────────────────────────────────────── KEYBOARD SHORTCUTS ──────────
+
+_kb_action = st.query_params.get("kb_action")
+if _kb_action:
+    st.query_params.clear()
+    if _kb_action == "new_session":
+        adapter.reset_session()
+        st.session_state.page = "sessions"
+        show_info_toast("New session created")
+        st.rerun()
+    elif _kb_action == "clear_session":
+        adapter.reset_session()
+        show_info_toast("Session cleared")
+        st.rerun()
+    elif _kb_action == "open_settings":
+        st.session_state.page = "settings"
+        st.rerun()
+
 # ────────────────────────────────────────────── SIDEBAR ──────────────────────
 
 with st.sidebar:
@@ -368,8 +389,13 @@ def render_overview_page():
 
     if hist:
         render_panel("Recent Executions")
-        for i, entry in enumerate(hist[-5:]):
-            render_execution_row(entry, len(hist) - len(hist[-5:]) + i + 1)
+        for i, entry in enumerate(reversed(hist[-5:])):
+            idx = len(hist) - i
+            render_execution_row(entry, idx)
+            if st.button(f"View Details {entry['id']}", key=f"view_exec_{entry['id']}",
+                         use_container_width=True):
+                st.session_state.execution_detail = entry
+                st.rerun()
     else:
         render_empty_state("No executions yet",
                            "Run your first request from Playground.")
@@ -399,11 +425,18 @@ def render_playground_page():
 
         if prompt := st.chat_input("Type your message..."):
             st.session_state.messages.append({"role": "user", "content": prompt})
+            st.session_state._executing = True
             with st.chat_message("user"):
                 st.markdown(prompt)
             with st.chat_message("assistant"):
-                with st.spinner("Pipeline running..."):
+                with st.status("Running Brompt pipeline...", expanded=True) as status:
                     ne = adapter.execute(prompt, st.session_state.get("play_template", "chat") or "chat")
+                    ok = ne["status"] == "success"
+                    status.update(
+                        label=f"{'✓' if ok else '✗'} Pipeline complete — {ne['id']} ({ne['timing']['total_ms']:.0f}ms)",
+                        state="complete" if ok else "error",
+                    )
+                    st.session_state._executing = False
                     if ne["response"]:
                         st.markdown(ne["response"])
                         if ne["tokens"]["saved"] > 0:
@@ -414,7 +447,10 @@ def render_playground_page():
                         render_error_state("Execution failed", ne["error"])
 
     with trace_col:
-        if st.session_state.execution_history:
+        if st.session_state.get("_executing") and not st.session_state.execution_history:
+            render_loading_state(["Security Ingress", "Rate Limiter", "Context Manager",
+                                 "Schema Validation", "LLM Provider", "Output Sanitizer", "Audit Chain"])
+        elif st.session_state.execution_history:
             last = st.session_state.execution_history[-1]
             render_panel(f"Execution {last['id']}",
                          f'<div style="font-size:12px;color:var(--text-muted)">{last["timing"]["total_ms"]:.0f}ms total</div>')
@@ -432,23 +468,81 @@ def render_playground_page():
 def render_sessions_page():
     render_page_header("Sessions", "Manage execution contexts",
                        '<button class="brompt-btn brompt-btn-primary" onclick="alert(\'New Session\')">+ New Session</button>')
+    search_q = render_session_search("page")
+
+    f1, f2 = st.columns([1, 1])
+    with f1:
+        prov_filter = st.selectbox("", ["All Providers", "Gemini", "OpenAI", "Anthropic", "Mistral", "Ollama"],
+                                   key="sess_prov_filter", label_visibility="collapsed")
+    with f2:
+        time_filter = st.selectbox("", ["All Time", "Today", "Last 7 days", "Last 30 days"],
+                                   key="sess_time_filter", label_visibility="collapsed")
+
     sessions = adapter.get_sessions()
+    if search_q:
+        sessions = [s for s in sessions if search_q.lower() in s.get("id", "").lower()
+                    or search_q.lower() in s.get("provider", "").lower()]
+    if prov_filter != "All Providers":
+        sessions = [s for s in sessions if s.get("provider") == prov_filter]
+
     if sessions:
         for s in sessions:
             render_session_card(s["id"], s["provider"], s["msg_count"],
                                 s["last_active"], s["template"])
+            col_a, col_b, _ = st.columns([1, 1, 4])
+            with col_a:
+                if st.button("Open", key=f"sess_open_{s['id']}", use_container_width=True):
+                    st.session_state.page = "playground"
+                    st.rerun()
+            with col_b:
+                if st.button("Clear", key=f"sess_clear_{s['id']}", use_container_width=True):
+                    adapter.reset_session()
+                    show_info_toast("Session cleared")
+                    st.rerun()
     else:
-        render_empty_state("No sessions", "Start a new execution context.")
+        render_empty_state("No sessions", "Start a new execution context." if not search_q
+                           else "No sessions match your search.")
 
 
 def render_providers_page():
     render_page_header("Providers", "Configure and monitor LLM backends")
+
+    active_name = adapter.provider_name
+    hist = st.session_state.execution_history
+
+    if adapter.has_engine and active_name:
+        active_hist = [e for e in hist if e.get("provider", "").lower() == active_name.lower()]
+        latencies = [e["timing"]["total_ms"] for e in active_hist if e.get("timing")]
+        avg_lat = sum(latencies) / max(len(latencies), 1)
+        ok_count = sum(1 for e in active_hist if e["status"] == "success")
+        err_count = len(active_hist) - ok_count
+        err_pct = (err_count / max(len(active_hist), 1)) * 100
+
+        api_key_val = st.session_state.get("api_key_input", "")
+        masked_key = api_key_val[:8] + "••••••••" if len(api_key_val) > 8 else "Not set"
+        render_panel(f"Active Provider: {active_name}", f"""
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;font-size:13px">
+            <div><span style="color:var(--text-muted)">Status</span><br><strong style="color:var(--success)">● Connected</strong></div>
+            <div><span style="color:var(--text-muted)">Model</span><br><strong style="color:var(--text-primary)">{adapter.provider_model}</strong></div>
+            <div><span style="color:var(--text-muted)">Type</span><br><strong style="color:var(--text-secondary)">{adapter.provider_type}</strong></div>
+            <div><span style="color:var(--text-muted)">Latency</span><br><strong style="color:var(--text-secondary)">{avg_lat:.0f}ms</strong></div>
+            <div><span style="color:var(--text-muted)">Requests</span><br><strong style="color:var(--text-primary)">{len(active_hist)}</strong></div>
+            <div><span style="color:var(--text-muted)">Errors</span><br><strong style="color:{"var(--danger)" if err_pct > 5 else "var(--text-secondary)"}">{err_pct:.1f}%</strong></div>
+        </div>
+        <hr style="border:none;border-top:1px solid var(--border-soft);margin:12px 0">
+        <div style="display:flex;align-items:center;justify-content:space-between;font-size:13px">
+            <span><span style="color:var(--text-muted)">API Credential</span> <code style="color:var(--text-disabled);font-size:12px">{masked_key}</code></span>
+            <button class="brompt-btn brompt-btn-secondary" style="padding:4px 12px;font-size:12px" onclick="alert('Update credential in Playground → Initialize Engine')">Update</button>
+        </div>""")
+
     c1, c2 = st.columns(2)
     cols = [c1, c2]
     for i, (name, factory) in enumerate(PROVIDER_FACTORIES.items()):
         with cols[i % 2]:
-            is_active = name == adapter.provider_name
-            metrics_dict = {"Requests": f"{len(st.session_state.execution_history)}" if is_active else "—"} if is_active else None
+            is_active = name == active_name
+            prov_hist = [e for e in hist if e.get("provider", "").lower() == name.lower()]
+            req_count = len(prov_hist) if prov_hist else ("—" if not is_active else len(hist))
+            metrics_dict = {"Requests": str(req_count)} if (prov_hist or is_active) else None
             render_provider_card(name, PROVIDER_HELP.get(name, ""),
                                 "Active" if is_active else "Ready",
                                 PROVIDER_TYPES.get(name, "Cloud"), metrics_dict)
@@ -479,6 +573,14 @@ def render_templates_page():
 def render_security_page():
     render_page_header("Security Center", "Defense-in-depth runtime protection")
     posture = adapter.security_posture
+
+    # Count real security events from audit log
+    entries = adapter.audit_entries
+    blocked = sum(1 for e in entries if e.get("event") in ("security_violation", "input_blocked"))
+    redacted = sum(1 for e in entries if e.get("event") in ("output_redacted",))
+    rate_limited = sum(1 for e in entries if e.get("event") in ("rate_limited",))
+    total_events = len(entries)
+
     render_panel("Security Posture", f"""
     <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;font-size:13px">
         <div><span style="color:var(--text-muted)">Input Sanitization</span><br><strong style="color:var(--success)">● {posture['input']}</strong></div>
@@ -486,9 +588,28 @@ def render_security_page():
         <div><span style="color:var(--text-muted)">Rate Limiting</span><br><strong style="color:var(--success)">● {posture['rate_limit']}</strong></div>
         <div><span style="color:var(--text-muted)">Audit Chain</span><br><strong style="color:{"var(--success)" if adapter.audit_verified else "var(--danger)"}">● {posture['audit']}</strong></div>
     </div>""")
-    render_security_summary(blocked=0, redacted=0, rate_limited=0,
-                            total_events=len(st.session_state.execution_history))
-    if not adapter.has_engine:
+    render_security_summary(blocked=blocked, redacted=redacted,
+                            rate_limited=rate_limited, total_events=total_events)
+
+    if entries:
+        render_panel("Recent Security Events")
+        limit = min(len(entries), 10)
+        for entry in entries[-limit:]:
+            ts = entry.get("timestamp", "")
+            if isinstance(ts, (int, float)):
+                import time as tm
+                ts = tm.strftime("%H:%M:%S", tm.localtime(ts))
+            else:
+                ts = str(ts)[:8]
+            event = entry.get("event", "—")
+            cls = "var(--danger)" if event in ("security_violation", "rate_limited") else "var(--warning)" if event == "output_redacted" else "var(--text-muted)"
+            st.markdown(f"""
+            <div style="display:flex;align-items:center;gap:12px;padding:6px 12px;border-bottom:1px solid var(--border-soft);font-size:13px">
+                <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted)">{ts}</span>
+                <span style="color:{cls}">{event}</span>
+                <span style="margin-left:auto;font-size:11px;color:var(--text-disabled)">{'●' if entry.get('is_secure') else '✗'}</span>
+            </div>""", unsafe_allow_html=True)
+    elif not adapter.has_engine:
         render_empty_state("Engine not initialized",
                            "Configure a provider and initialize the engine.")
 
@@ -508,6 +629,18 @@ def render_audit_page():
     if entries:
         for entry in entries[-20:]:
             render_audit_entry(entry)
+            e_hash = entry.get("entry_hash", entry.get("hash", ""))
+            col_h, col_v = st.columns([1, 1])
+            with col_h:
+                if st.button(f"Copy Hash", key=f"audit_hash_{e_hash[:8]}",
+                             use_container_width=True):
+                    st.code(e_hash, language="text")
+                    show_info_toast("Hash displayed above")
+            with col_v:
+                if st.button(f"View Execution", key=f"audit_view_{e_hash[:8]}",
+                             use_container_width=True):
+                    st.session_state.page = "playground"
+                    st.rerun()
         st.caption(f"Showing last {min(len(entries), 20)} of {len(entries)} entries")
     else:
         render_empty_state("No audit entries", "Execute a prompt to generate entries.")
@@ -515,6 +648,7 @@ def render_audit_page():
 
 def render_metrics_page():
     render_page_header("Observability", "Runtime performance and execution analytics")
+    time_range = render_time_range_selector("metrics")
     hist = st.session_state.execution_history
     snap = adapter.metrics_snapshot
 
@@ -553,11 +687,32 @@ def render_metrics_page():
         saved_tok = sum(e["tokens"]["saved"] for e in hist)
 
         with st.expander("Token Analytics", expanded=True):
-            st.metric("Total Tokens", f"{total_tok:,}")
-            st.metric("Tokens Saved", f"{saved_tok:,}")
-            st.metric("Total Cost", _fmt_cost(total_cost))
-            app = st.session_state.execution_history
-            big = [e for e in app if e["tokens"]["input"] > 0]
+            c1, c2, c3 = st.columns(3)
+            with c1: st.metric("Total Tokens", f"{total_tok:,}")
+            with c2: st.metric("Tokens Saved", f"{saved_tok:,}")
+            with c3: st.metric("Total Cost", _fmt_cost(total_cost))
+
+            if saved_tok > 0:
+                reduction_pct = saved_tok / max(total_tok + saved_tok, 1) * 100
+                bar_w = max(20, min(100, int((total_tok - saved_tok) / max(total_tok, 1) * 100)))
+                before_w = max(20, min(100, int((total_tok + saved_tok) / max(total_tok + saved_tok, 1) * 100)))
+                st.markdown(f"""
+                <div style="margin:12px 0;font-size:12px">
+                    <div style="color:var(--text-muted);margin-bottom:4px">Before optimization</div>
+                    <div style="height:20px;background:var(--bg-surface-3);border-radius:var(--radius-sm);overflow:hidden">
+                        <div style="width:{before_w}%;height:100%;background:var(--text-disabled);border-radius:var(--radius-sm)"></div>
+                    </div>
+                    <div style="color:var(--text-muted);margin:8px 0 4px">After optimization</div>
+                    <div style="height:20px;background:var(--bg-surface-3);border-radius:var(--radius-sm);overflow:hidden">
+                        <div style="width:{bar_w}%;height:100%;background:var(--success);border-radius:var(--radius-sm)"></div>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;margin-top:4px;color:var(--text-muted)">
+                        <span>Saved: {saved_tok:,} tokens</span>
+                        <span style="color:var(--success)">-{reduction_pct:.0f}%</span>
+                    </div>
+                </div>""", unsafe_allow_html=True)
+
+            big = [e for e in hist if e["tokens"]["input"] > 0]
             if big:
                 avg_input = sum(e["tokens"]["input"] for e in big) / len(big)
                 avg_output = sum(e["tokens"]["output"] for e in big) / len(big)
@@ -576,9 +731,15 @@ def render_traces_page():
             if search and search not in e["id"] and search not in e["provider"]:
                 continue
             render_execution_row(e)
-            if st.button(f"View Trace {e['id']}", key=f"view_trace_{e['id']}"):
-                st.session_state.page = "playground"
-                st.rerun()
+            col_a, col_b, _ = st.columns([1, 1, 4])
+            with col_a:
+                if st.button(f"Trace {e['id']}", key=f"view_trace_{e['id']}", use_container_width=True):
+                    st.session_state.execution_detail = e
+                    st.rerun()
+            with col_b:
+                if st.button(f"Playground", key=f"open_trace_{e['id']}", use_container_width=True):
+                    st.session_state.page = "playground"
+                    st.rerun()
     else:
         render_empty_state("No traces found", "Run your first request from Playground.")
 
@@ -615,10 +776,13 @@ def render_settings_page():
         render_panel("Appearance")
         st.toggle("Compact mode", value=False, key="set_compact")
         st.toggle("Show execution trace", value=st.session_state.show_trace, key="set_show_trace")
+        st.toggle("Show keyboard shortcuts hint", value=False, key="set_shortcuts_hint")
     with c2:
         render_panel("Developer")
         st.toggle("Debug information", value=False, key="set_debug")
         st.toggle("Raw event details", value=False, key="set_raw")
+
+    render_shortcuts_hint(visible=st.session_state.get("set_shortcuts_hint", False))
 
     if st.button("Clear Local Session", use_container_width=True, type="secondary"):
         adapter.reset_session()
@@ -644,6 +808,9 @@ PAGES = {
     "config": render_runtime_config_page,
     "settings": render_settings_page,
 }
+
+if st.session_state.get("execution_detail"):
+    render_execution_drawer(st.session_state.execution_detail)
 
 page_func = PAGES.get(st.session_state.page)
 if page_func:

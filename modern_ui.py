@@ -235,6 +235,40 @@ STATUS_CSS = """
 .brompt-badge-offline { background: transparent; border: 1px solid var(--border); color: var(--text-disabled); }
 """
 
+DRAWER_CSS = """
+.brompt-drawer-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,.5); z-index: 100; display: flex; justify-content: flex-end;
+}
+.brompt-drawer {
+    width: 480px; max-width: 100vw; height: 100vh; overflow-y: auto;
+    background: var(--bg-surface); border-left: 1px solid var(--border);
+    padding: var(--space-6); animation: drawer-slide .2s ease;
+}
+@keyframes drawer-slide { from { transform: translateX(100%); } to { transform: translateX(0); } }
+.brompt-drawer-close {
+    float: right; background: transparent; border: none; color: var(--text-muted);
+    font-size: 20px; cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm);
+}
+.brompt-drawer-close:hover { background: var(--bg-surface-2); color: var(--text-primary); }
+.brompt-drawer-section { margin: var(--space-5) 0; }
+.brompt-drawer-label { font-size: 11px; font-weight: 600; color: var(--text-disabled); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+.brompt-drawer-value { font-size: 14px; color: var(--text-primary); }
+.brompt-drawer-divider { border: none; border-top: 1px solid var(--border-soft); margin: var(--space-4) 0; }
+"""
+
+KEYBOARD_CSS = """
+.brompt-shortcuts-hint {
+    position: fixed; bottom: 16px; right: 16px; z-index: 50;
+    background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: var(--space-4); font-size: 12px; color: var(--text-muted); min-width: 200px;
+    box-shadow: var(--shadow-md); display: none;
+}
+.brompt-shortcuts-hint.visible { display: block; }
+.brompt-shortcuts-item { display: flex; justify-content: space-between; padding: 3px 0; }
+kbd { background: var(--bg-surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px; font-size: 11px; color: var(--text-disabled); font-family: 'JetBrains Mono', monospace; }
+"""
+
 RESPONSIVE_CSS = """
 @media (max-width: 1200px) {
     .brompt-metric { min-height: 96px; }
@@ -272,7 +306,7 @@ MISC_CSS = """
 GLOBAL_CSS = "\n".join([
     BASE_CSS, STREAMLIT_CSS, LAYOUT_CSS, SIDEBAR_CSS, TOPBAR_CSS, CARD_CSS,
     METRIC_CARD_CSS, BUTTON_CSS, FORM_CSS, TABLE_CSS, TRACE_CSS,
-    STATUS_CSS, MISC_CSS, RESPONSIVE_CSS,
+    STATUS_CSS, DRAWER_CSS, KEYBOARD_CSS, MISC_CSS, RESPONSIVE_CSS,
 ])
 
 # ────────────────────────────────────────────── DESIGN SYSTEM ────────────────
@@ -287,6 +321,43 @@ def inject_global_css(theme: str = "dark"):
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
         """, unsafe_allow_html=True)
         st.session_state._fonts_loaded = "Inter"
+    if "_kb_injected" not in st.session_state:
+        st.markdown("""
+        <script>
+        document.addEventListener('keydown', function(e) {
+            if (e.ctrlKey && e.key === 'k') {
+                e.preventDefault();
+                const inp = document.querySelector('[data-testid="stTextInput"] input');
+                if (inp) inp.focus();
+                return;
+            }
+            var actions = {
+                'n': 'new_session',
+                'l': 'clear_session',
+                ',': 'open_settings',
+            };
+            var action = actions[e.key];
+            if (e.ctrlKey && action) {
+                e.preventDefault();
+                var url = new URL(window.location);
+                url.searchParams.set('kb_action', action);
+                window.history.replaceState({}, '', url);
+                window.dispatchEvent(new Event('popstate'));
+            }
+        });
+        window.addEventListener('popstate', function() {
+            var params = new URLSearchParams(window.location.search);
+            var action = params.get('kb_action');
+            if (action) {
+                params.delete('kb_action');
+                var url = new URL(window.location);
+                url.search = params.toString();
+                window.history.replaceState({}, '', url);
+            }
+        });
+        </script>
+        """, unsafe_allow_html=True)
+        st.session_state._kb_injected = True
 
 
 # ────────────────────────────────────────────── LAYOUT ───────────────────────
@@ -379,12 +450,12 @@ def render_page_header(title: str, subtitle: Optional[str] = None,
     st.markdown(html, unsafe_allow_html=True)
 
 
-def render_footer(version: str = "0.1.0-alpha"):
+def render_footer(version: str = "2.0.0"):
     st.markdown(f"""
     <div style="margin-top:40px;padding-top:12px;border-top:1px solid var(--border-soft);
                 display:flex;justify-content:space-between;font-size:12px;color:var(--text-disabled)">
         <span>Brompt v{version}</span>
-        <span>Alpha — Not for production use</span>
+        <span>Production-Ready</span>
     </div>""", unsafe_allow_html=True)
 
 
@@ -593,6 +664,87 @@ def render_audit_integrity(verified: bool, count: int):
         <div style="text-align:right">
             <div style="font-size:16px;font-weight:700;color:{status_cls}">{status_icon} {status_text}</div>
         </div>
+    </div>""", unsafe_allow_html=True)
+
+
+# ────────────────────────────────────────────── EXECUTION DRAWER ─────────────
+
+def render_execution_drawer(execution: dict, on_close_key: str = "close_drawer"):
+    if not execution:
+        return
+    eid = execution.get("id", "#?")
+    status = execution.get("status", "?")
+    ok = status == "success"
+    status_cls = "var(--success)" if ok else "var(--danger)"
+    status_text = "SUCCESS" if ok else "FAILED"
+
+    st.markdown(f"""
+    <div class="brompt-drawer-overlay">
+    <div class="brompt-drawer">
+        <button class="brompt-drawer-close" onclick="document.querySelector('.brompt-drawer-overlay').style.display='none'">✕</button>
+        <div style="font-size:18px;font-weight:700;color:var(--text-primary);margin-bottom:4px">Execution {eid}</div>
+        <div style="font-size:13px;color:{status_cls};margin-bottom:var(--space-5)">{status_text} · {execution.get('timing',{}).get('total_ms',0):.0f}ms</div>
+
+        <hr class="brompt-drawer-divider">
+        <div class="brompt-drawer-section">
+            <div class="brompt-drawer-label">Provider</div>
+            <div class="brompt-drawer-value">{execution.get('provider','—')} · {execution.get('model','—')}</div>
+        </div>
+        <div class="brompt-drawer-section">
+            <div class="brompt-drawer-label">Timing</div>
+            <div class="brompt-drawer-value">Total: {execution.get('timing',{}).get('total_ms',0):.0f}ms · Provider: {execution.get('timing',{}).get('provider_ms',0):.0f}ms</div>
+        </div>
+        <div class="brompt-drawer-section">
+            <div class="brompt-drawer-label">Tokens</div>
+            <div class="brompt-drawer-value">Input: {execution.get('tokens',{}).get('input',0):,} · Output: {execution.get('tokens',{}).get('output',0):,} · Saved: {execution.get('tokens',{}).get('saved',0):,}</div>
+        </div>
+        <div class="brompt-drawer-section">
+            <div class="brompt-drawer-label">Security</div>
+            <div class="brompt-drawer-value">Input: {execution.get('security',{}).get('input','—')} · Output: {execution.get('security',{}).get('output','—')}</div>
+        </div>
+        <div class="brompt-drawer-section">
+            <div class="brompt-drawer-label">Audit</div>
+            <div class="brompt-drawer-value">Recorded: {'✓' if execution.get('audit',{}).get('recorded') else '✗'} · Verified: {'✓' if execution.get('audit',{}).get('verified') else '✗'}</div>
+        </div>
+
+        <hr class="brompt-drawer-divider">
+        <div style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:12px">Pipeline Trace</div>
+    """)
+    stages = execution.get("trace", [])
+    for s in stages:
+        render_trace_step(s.get("name",""), s.get("status","completed"), s.get("time_ms",0))
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+    if st.button("Close", key=on_close_key):
+        st.session_state.execution_detail = None
+        st.rerun()
+
+
+def render_time_range_selector(key_suffix: str = ""):
+    sel = st.segmented_control(
+        "Time Range", ["5m", "1h", "24h", "7d"],
+        default="1h", key=f"time_range_{key_suffix}",
+        label_visibility="collapsed",
+    )
+    return sel
+
+
+def render_session_search(key_suffix: str = ""):
+    search = st.text_input("", placeholder="Search sessions...",
+                           key=f"sess_search_{key_suffix}",
+                           label_visibility="collapsed")
+    return search or ""
+
+
+def render_shortcuts_hint(visible: bool = False):
+    cls = "brompt-shortcuts-hint visible" if visible else "brompt-shortcuts-hint"
+    st.markdown(f"""
+    <div class="{cls}">
+        <div style="font-size:13px;font-weight:600;color:var(--text-secondary);margin-bottom:6px">Keyboard Shortcuts</div>
+        <div class="brompt-shortcuts-item"><span>Command Palette</span><kbd>⌘K</kbd></div>
+        <div class="brompt-shortcuts-item"><span>New Session</span><kbd>Ctrl+N</kbd></div>
+        <div class="brompt-shortcuts-item"><span>Clear</span><kbd>Ctrl+L</kbd></div>
+        <div class="brompt-shortcuts-item"><span>Settings</span><kbd>Ctrl+,</kbd></div>
     </div>""", unsafe_allow_html=True)
 
 
