@@ -13,6 +13,7 @@ from .config import WidgetConfig, ProviderConfig, GenerationConfig, ProviderType
 from .providers import ProviderFactory, LLMProvider, ProviderResult
 from .session import Session, SessionManager, Message
 from .pricing import estimate_cost
+from .optimizer import TokenOptimizer
 
 try:
     from .feedback import FeedbackLoop, PromptOutcome
@@ -148,6 +149,10 @@ class BromptWidget:
             logger.info("Feedback system initialised")
         elif self.config.feedback.enabled and not FEEDBACK_AVAILABLE:
             logger.warning("Feedback system unavailable — install brompt[feedback]")
+        self._optimizer = TokenOptimizer()
+        self._is_first_message = True
+        self._total_saved_tokens = 0
+        self._last_savings = {}
         self._stats = {"total_prompts": 0, "total_tokens": 0, "total_latency_ms": 0.0, "total_cost": 0.0, "errors": 0}
         logger.info(f"BromptWidget initialised — model: {self.config.provider.model}")
 
@@ -193,6 +198,8 @@ class BromptWidget:
                 user_input=user_input, template=template, context=context,
                 conversation_context=conversation_context, system_prompt=system_prompt,
             )
+            savings = self._last_savings
+            self._total_saved_tokens += savings.get("saved_tokens", 0)
             gen_params = {
                 "temperature": self.config.generation.temperature,
                 "max_tokens": self.config.generation.max_tokens,
@@ -227,6 +234,8 @@ class BromptWidget:
                 metadata={
                     "provider_outcome": provider_result.outcome.value,
                     "conversation_turns": len(conversation_context),
+                    "saved_tokens": savings.get("saved_tokens", 0),
+                    "savings_percent": round(savings.get("savings_percent", 0), 1),
                 },
             )
             if session:
@@ -248,10 +257,13 @@ class BromptWidget:
             if not provider_result.is_success:
                 self._stats["errors"] += 1
             overhead = cost - plain_cost
+            saved = savings.get("saved_tokens", 0)
+            spct = savings.get("savings_percent", 0)
             logger.info(
                 f"Executed: {template} | "
                 f"cost=${cost:.6f} (prompt=${plain_cost:.6f}+overhead=${overhead:.6f}) | "
-                f"tokens={prompt_tokens}in/{completion_tokens}out | {latency_ms:.0f}ms"
+                f"tokens={prompt_tokens}in/{completion_tokens}out | "
+                f"saved={saved}tok({spct:.0f}%) | {latency_ms:.0f}ms"
             )
             return result
         except Exception as e:
@@ -321,6 +333,9 @@ class BromptWidget:
             return self._feedback.get_best_template()
         return None
 
+    def reset_conversation(self):
+        self._is_first_message = True
+
     def get_analytics(self) -> dict:
         report = {
             "stats": self._stats,
@@ -335,6 +350,7 @@ class BromptWidget:
                       / self._stats["total_cost"] * 100, 1)
                 if self._stats["total_cost"] > 0 else 0.0
             ),
+            "total_saved_tokens": self._total_saved_tokens,
             "active_sessions": self._sessions.get_total_sessions(),
             "cache_entries": len(self._cache) if self._cache else 0,
         }
@@ -346,21 +362,20 @@ class BromptWidget:
         self, user_input: str, template: str, context: Optional[dict] = None,
         conversation_context: Optional[list] = None, system_prompt: Optional[str] = None,
     ) -> str:
-        parts = []
-        if system_prompt:
-            parts.append(f"<system>\n{system_prompt}\n</system>")
-        if conversation_context:
-            parts.append("<conversation_history>")
-            for msg in conversation_context:
-                parts.append(f"[{msg['role']}]: {msg['content']}")
-            parts.append("</conversation_history>")
-        parts.append(f"<template id='{template}'>")
-        parts.append(self._apply_template(template, user_input, context))
-        parts.append("</template>")
-        parts.append(f"<user_input>\n{user_input}\n</user_input>")
+        template_content = self._apply_template(template, user_input, context)
         if context:
-            parts.append(f"<context>\n{json.dumps(context, ensure_ascii=False, indent=2)}\n</context>")
-        return "\n\n".join(parts)
+            template_content += "\n\n" + json.dumps(context, ensure_ascii=False, indent=2)
+
+        optimized, savings = self._optimizer.build_optimized_prompt(
+            system_prompt=system_prompt or "",
+            user_input=user_input,
+            template_content=template_content,
+            messages_history=conversation_context,
+            is_first_message=self._is_first_message,
+        )
+        self._is_first_message = False
+        self._last_savings = savings
+        return optimized
 
     def _apply_template(self, template_id: str, user_input: str, context: Optional[dict] = None) -> str:
         builtin_templates = {
@@ -376,5 +391,6 @@ class BromptWidget:
         return (
             f"BromptWidget(model='{self.config.provider.model}', "
             f"sessions={self._sessions.get_total_sessions()}, "
-            f"cache={len(self._cache) if self._cache else 0})"
+            f"cache={len(self._cache) if self._cache else 0}, "
+            f"saved_tokens={self._total_saved_tokens})"
         )
