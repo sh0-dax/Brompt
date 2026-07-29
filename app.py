@@ -198,7 +198,7 @@ with st.sidebar:
 
     with st.container():
         st.caption(LANG["provider"])
-        provider_sel = st.selectbox("", list(PROVIDER_OPTIONS.keys()), label_visibility="collapsed", key="provider_sel")
+        provider_sel = st.selectbox("Provider", list(PROVIDER_OPTIONS.keys()), label_visibility="collapsed", key="provider_sel")
         _, default_model = PROVIDER_OPTIONS[provider_sel]
         model = st.text_input(LANG["model"], value=default_model, key="model_input")
         api_key = st.text_input(LANG["api_key"], type="password", key="api_key_input",

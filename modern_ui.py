@@ -722,7 +722,7 @@ def render_execution_drawer(execution: dict, on_close_key: str = "close_drawer")
 
 def render_time_range_selector(key_suffix: str = ""):
     sel = st.segmented_control(
-        "Time Range", ["5m", "1h", "24h", "7d"],
+        "Time range", ["5m", "1h", "24h", "7d"],
         default="1h", key=f"time_range_{key_suffix}",
         label_visibility="collapsed",
     )
@@ -730,7 +730,7 @@ def render_time_range_selector(key_suffix: str = ""):
 
 
 def render_session_search(key_suffix: str = ""):
-    search = st.text_input("", placeholder="Search sessions...",
+    search = st.text_input("Search sessions", placeholder="Search sessions...",
                            key=f"sess_search_{key_suffix}",
                            label_visibility="collapsed")
     return search or ""
@@ -806,7 +806,7 @@ COMMANDS = [
 
 def render_command_palette():
     import re as _re
-    search = st.text_input("", placeholder="Search commands...",
+    search = st.text_input("Command search", placeholder="Search commands...",
                            key="_cmd_palette_search", label_visibility="collapsed")
     query = (search or "").lower()
     for label, page_key in COMMANDS:

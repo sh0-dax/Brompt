@@ -45,7 +45,7 @@ inject_global_css()
 DEFAULT_UI_STATE = {
     "page": "overview", "session_id": None, "selected_template": "chat",
     "show_trace": True, "command_palette": False, "_cmd_palette_search": "",
-    "engine": None, "config_path": "agent.brompt.yaml",
+    "engine": None, "optimizer": None, "config_path": "agent.brompt.yaml",
     "messages": [], "execution_history": [],
     "optimization_enabled": True, "max_context_messages": 4,
     "total_saved_tokens": 0, "total_cost_saved": 0.0, "system_sent": False,
@@ -216,6 +216,9 @@ class BromptUIAdapter:
 
         savings = {}
         if st.session_state.optimization_enabled:
+            if st.session_state.optimizer is None:
+                from brompt.optimizer import TokenOptimizer
+                st.session_state.optimizer = TokenOptimizer()
             is_first = not st.session_state.system_sent
             raw_tpl = "Process the following input and provide the best possible response."
             _, savings = st.session_state.optimizer.build_optimized_prompt(
@@ -472,10 +475,10 @@ def render_sessions_page():
 
     f1, f2 = st.columns([1, 1])
     with f1:
-        prov_filter = st.selectbox("", ["All Providers", "Gemini", "OpenAI", "Anthropic", "Mistral", "Ollama"],
+        prov_filter = st.selectbox("Provider filter", ["All Providers", "Gemini", "OpenAI", "Anthropic", "Mistral", "Ollama"],
                                    key="sess_prov_filter", label_visibility="collapsed")
     with f2:
-        time_filter = st.selectbox("", ["All Time", "Today", "Last 7 days", "Last 30 days"],
+        time_filter = st.selectbox("Time filter", ["All Time", "Today", "Last 7 days", "Last 30 days"],
                                    key="sess_time_filter", label_visibility="collapsed")
 
     sessions = adapter.get_sessions()
@@ -725,7 +728,7 @@ def render_traces_page():
     render_page_header("Traces", "Execution trace history")
     traces = adapter.get_traces()
     if traces:
-        search = st.text_input("", placeholder="Search execution ID...",
+        search = st.text_input("Search trace", placeholder="Search execution ID...",
                                label_visibility="collapsed", key="trace_search")
         for e in reversed(traces):
             if search and search not in e["id"] and search not in e["provider"]:
