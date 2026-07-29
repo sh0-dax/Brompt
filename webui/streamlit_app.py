@@ -439,7 +439,7 @@ def render_playground_page():
                     ne = adapter.execute(prompt, st.session_state.get("play_template", "chat") or "chat")
                     ok = ne["status"] == "success"
                     status.update(
-                        label=f"{'✓' if ok else '✗'} Pipeline complete — {ne['id']} ({ne['timing']['total_ms']:.0f}ms)",
+                        label=f"{'[OK]' if ok else '[FAIL]'} Pipeline complete - {ne['id']} ({ne['timing']['total_ms']:.0f}ms)",
                         state="complete" if ok else "error",
                     )
                     st.session_state._executing = False
