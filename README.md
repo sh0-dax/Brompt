@@ -61,7 +61,7 @@
 
 The **Brompt Engine** addresses the fundamental limitations of modern LLM agents: non-deterministic execution paths and linear context drift (`O(N)` token growth). It acts as an execution middleware positioning itself between host application environments and upstream model endpoints.
 
-**Performance Note:** While theoretical complexity is `O(N)` due to input sanitization scanning, strict payload bounds (64KB max) make performance effectively near-constant `O(1)` in practice.
+**Performance Note:** The security pipeline is `O(N)` on input length, but with a 64KB cap the worst-case runtime is bounded. In practice the LLM provider call (1–10s) dominates end-to-end latency by 2–3 orders of magnitude, so input-size variance in the pipeline is negligible.
 
 **Note on the pattern-matching security layer:** `SecurityEngine.sanitize`
 is a regex blocklist. It catches unsophisticated, literal injection
