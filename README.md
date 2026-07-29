@@ -28,6 +28,7 @@
   <img src="https://img.shields.io/badge/Rich-TUI-0F0F0F?style=for-the-badge" alt="Rich TUI">
   <img src="https://img.shields.io/badge/YAML-CB171E?style=for-the-badge&logo=yaml&logoColor=white" alt="YAML">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
+  <img src="https://img.shields.io/badge/Status-v2--Production--Ready-228B22?style=for-the-badge" alt="v2 Production-Ready">
 </p>
 
 <p align="center">
@@ -45,14 +46,17 @@
 <p align="center"><strong>Table of Contents</strong></p>
 <p align="center">
   <a href="#1-system-architecture-overview">Architecture</a> ·
-  <a href="#2-repository-layout">Layout</a> ·
-  <a href="#3-configuration-manifest">Config</a> ·
-  <a href="#4-quick-start">Quick Start</a> ·
-  <a href="#5-providers">Providers</a> ·
-  <a href="#6-api-reference">API</a> ·
-  <a href="#7-cicd-pipeline">CI/CD</a> ·
-  <a href="#8-production-readiness">Production</a> ·
-  <a href="#9-license">License</a>
+  <a href="#2-security-architecture">Security</a> ·
+  <a href="#3-core-features">Features</a> ·
+  <a href="#4-repository-layout">Layout</a> ·
+  <a href="#5-configuration-manifest">Config</a> ·
+  <a href="#6-quick-start">Quick Start</a> ·
+  <a href="#7-providers">Providers</a> ·
+  <a href="#8-api-reference">API</a> ·
+  <a href="#9-advanced-features">Advanced</a> ·
+  <a href="#10-cicd-pipeline">CI/CD</a> ·
+  <a href="#11-production-readiness">Production</a> ·
+  <a href="#12-license">License</a>
 </p>
 
 ---
@@ -92,7 +96,7 @@ graph TD
     N --> L
 ```
 
-### Core Architecture Pillars:
+### Core Architecture Pillars
 
 | Pillar | Description |
 |---|---|
@@ -114,7 +118,115 @@ graph TD
 
 ---
 
-## 2. Repository Layout
+## 2. Security Architecture
+
+Brompt implements a multi-layer defense-in-depth security pipeline, not a single regex blocklist.
+
+### Layer 1: Input Canonicalization
+
+- **NFKC Unicode normalization** — neutralizes homoglyph attacks
+- **Zero-width character stripping** — removes invisible obfuscation (`\u200b`, `\u200c`, `\ufeff`, etc.)
+- **Base64 payload detection** — heuristic scoring + validation of encoded payloads
+- **Leetspeak normalization** — neutralizes `0→o`, `3→e`, `4→a`, `@→a`, `$→s`, etc.
+
+### Layer 2: Pattern Blocklist
+
+14 regex patterns covering 4 languages (English, Arabic, Italian, German) for:
+- Direct instruction overrides
+- System prompt leakage attempts
+- Guardrail bypass attempts
+- Jailbreak persona switches
+- Role-play bypasses
+
+### Layer 3: Semantic Classifier (`classifier.py`)
+
+An optional LLM-based second line of defense that reasons about intent, not surface text:
+- Catches paraphrased, translated, or obfuscated attacks
+- Returns structured JSON: `{is_injection, confidence, reasoning}`
+- Configurable confidence threshold (default 0.7)
+- Off by default — costs an extra model call per request
+
+### Layer 4: Output Sanitization
+
+Redacts secret-like content before it reaches the caller:
+- Anthropic API keys (`sk-ant-...`)
+- OpenAI-style keys (`sk-...`)
+- AWS access keys (`AKIA...`)
+- Private key blocks
+- GitHub / Slack tokens
+
+### Layer 5: Audit-Grade Observability
+
+- SHA-256 hash-chained, append-only audit log
+- Tamper-evident via `AuditLog.verify()`
+- Every security event recorded with immutable chain
+
+**Note:** No blocklist is a guarantee. The classifier layer significantly raises the bar, but defense-in-depth design (least-privilege tools, output redaction, audit trails) is essential.
+
+---
+
+## 3. Core Features
+
+### Circuit Breaker (`brompt.circuit_breaker`)
+
+Standard CLOSED / OPEN / HALF_OPEN state machine:
+- Configurable failure threshold + recovery timeout
+- Thread-safe with `threading.Lock()`
+- Supports sync (`call_sync`) and async (`call`) paths
+- Built-in fallback support
+
+```python
+from brompt.circuit_breaker import CircuitBreaker
+
+cb = CircuitBreaker(failure_threshold=5, recovery_timeout=30.0)
+result = await cb.call(provider.generate(messages), fallback="Service unavailable")
+```
+
+### Model Router (`brompt.router`)
+
+Route requests based on strategy:
+- **Cheapest** — minimize cost
+- **Fastest** — minimize latency
+- **Best Quality** — maximize output quality
+- **Fallback** — cascade on failure
+- Complexity-aware — route simple queries to cheaper models
+
+```python
+from brompt.router import ModelRouter, RoutingStrategy
+
+router = ModelRouter()
+router.register_provider("cheap", ollama_provider)
+router.register_provider("fast", openai_provider)
+router.register_provider("quality", anthropic_provider)
+
+route = await router.route(query, strategy=RoutingStrategy.CHEAPEST)
+```
+
+### Prompt Optimizer (`brompt.optimizer`)
+
+Built-in prompt optimization utilities for token efficiency and output quality.
+
+```python
+from brompt.optimizer import TokenOptimizer
+
+optimizer = TokenOptimizer()
+compressed = optimizer.compress_context(messages)
+```
+
+### Cost Tracking (`brompt.pricing`)
+
+Per-request cost estimation and tracking across providers.
+
+```python
+from brompt.pricing import estimate_cost
+
+cost = estimate_cost("anthropic", prompt_tokens=150, completion_tokens=50)
+# → 0.0012 (USD)
+```
+
+---
+
+## 4. Repository Layout
 
 ```text
 Brompt/
@@ -187,14 +299,14 @@ Brompt/
 
 ---
 
-## 3. Configuration Manifest
+## 5. Configuration Manifest
 
 Runtime behavior is governed by `agent.brompt.yaml`:
 
 ```yaml
 metadata:
   name: "ProductionAgentEngine"
-  version: "0.1.0-alpha"
+  version: "2.0.0"
   environment: "production"
 
 security_policy:
@@ -216,7 +328,7 @@ schema_validation:
 
 ---
 
-## 4. Quick Start
+## 6. Quick Start
 
 ```bash
 # Clone
@@ -255,7 +367,7 @@ streamlit run webui/streamlit_app.py
 
 ---
 
-## 5. Providers
+## 7. Providers
 
 Brompt supports **7 LLM providers** via a pluggable provider system. Each is an optional dependency — install only what you need.
 
@@ -304,7 +416,7 @@ If none are set, the engine runs in **dry-run / validation-only mode** — input
 
 ---
 
-## 6. API Reference
+## 8. API Reference
 
 ### `BromptEngine(config_path, provider=None, async_provider=None, rate_limiter=None, injection_classifier=None, circuit_breaker=None)`
 
@@ -316,6 +428,9 @@ Core runtime entry point. Loads YAML manifest and initializes all subsystems.
 | `provider` | `LLMProvider \| None` | `None` | Sync provider (auto-detected from env if `None`) |
 | `async_provider` | `LLMProvider \| None` | `None` | Async provider for `execute_async()` |
 | `audit_log_path` | `str \| None` | `None` | Custom audit log path |
+| `rate_limiter` | `RateLimiterBackend \| None` | `None` | Custom rate limiter instance |
+| `injection_classifier` | `InjectionClassifier \| None` | `None` | Optional LLM-based injection classifier |
+| `circuit_breaker` | `CircuitBreaker \| None` | `None` | Optional circuit breaker for provider calls |
 
 **Methods:**
 
@@ -391,18 +506,19 @@ Routes prompts to the optimal provider based on complexity classification.
 | Method | Returns | Description |
 |---|---|---|
 | `classify_complexity(text)` | `ComplexityLevel` | Heuristic: word count, code/math markers, analytical keywords |
-| `score_providers(text)` | `list[Route]` | Ranked list of (provider, model, score, estimated_cost) |
-| `route(text, strategy=None)` | `Route` | Select provider by strategy (CHEAPEST / FASTEST / BEST_QUALITY / FALLBACK) |
+| `score_providers(complexity)` | `list[Route]` | Ranked list of (provider, model, score, estimated_cost) |
+| `route(text, strategy=None)` | `Route \| None` | Select provider by strategy (CHEAPEST / FASTEST / BEST_QUALITY / FALLBACK) |
+| `register_provider(name, provider)` | `None` | Register a provider instance for routing |
+| `register_providers(providers)` | `None` | Bulk register providers by dict |
 
-### `InjectionClassifier(provider, model=None)`
+### `LLMInjectionClassifier(provider, confidence_threshold=0.7)`
 
 Opt-in LLM-based semantic injection detector — catches paraphrased attacks.
 
 | Method | Returns | Description |
 |---|---|---|
-| `is_blocked(text)` | `ClassificationResult \| None` | `None` if unavailable; raises `InjectionClassificationError` on failure |
-
----
+| `classify(text)` | `ClassificationResult` | Structured JSON: `{is_injection, confidence, reasoning}` |
+| `is_blocked(text)` | `ClassificationResult \| None` | `None` if safe; result if blocked above threshold |
 
 ### CLI Commands
 
@@ -517,7 +633,77 @@ Always-on-top floating widget with 5 tabs (Docs, Live Status, Charts, Chat, Sett
 
 ---
 
-## 7. CI/CD Pipeline
+## 9. Advanced Features
+
+### Semantic Injection Classification
+
+Enable the LLM classifier for production deployments where security is critical:
+
+```python
+from brompt.classifier import LLMInjectionClassifier
+from brompt._providers_legacy import build_provider_from_env
+
+provider = build_provider_from_env()
+classifier = LLMInjectionClassifier(provider, confidence_threshold=0.7)
+
+result = classifier.is_blocked(user_input)
+if result:
+    print(f"Blocked: {result.reasoning}")
+```
+
+### Circuit Breaker with Fallback
+
+```python
+from brompt.circuit_breaker import CircuitBreaker
+
+cb = CircuitBreaker(failure_threshold=3, recovery_timeout=60.0)
+
+try:
+    response = await cb.call(
+        primary_provider.agenerate(messages),
+        fallback=await backup_provider.agenerate(messages)
+    )
+except CircuitBreakerOpenError:
+    response = "All providers unavailable. Please try again later."
+```
+
+### Model Routing
+
+```python
+from brompt.router import ModelRouter, RoutingStrategy
+
+router = ModelRouter()
+router.register_provider("cheap", ollama_provider)
+router.register_provider("fast", openai_provider)
+router.register_provider("quality", anthropic_provider)
+
+route = await router.route(query, strategy=RoutingStrategy.CHEAPEST)
+response = await route.provider.agenerate(messages)
+```
+
+### Prompt Optimization
+
+```python
+from brompt.optimizer import TokenOptimizer
+
+optimizer = TokenOptimizer()
+tokens = optimizer.estimate_tokens("Hello world")  # ~3
+compressed = optimizer.compress_context(messages)
+summary = optimizer.summarize_history(message_history)
+```
+
+### Cost Estimation
+
+```python
+from brompt.pricing import estimate_cost
+
+cost = estimate_cost("gpt-4o", prompt_tokens=200, completion_tokens=100)
+print(f"Request cost: ${cost:.6f}")
+```
+
+---
+
+## 10. CI/CD Pipeline
 
 GitHub Actions runs tests on every push/PR across Python 3.10–3.13:
 
@@ -528,7 +714,7 @@ matrix:
 
 ---
 
-## 8. Production Readiness
+## 11. Production Readiness
 
 **Current Status: Production-Ready (v2)** — Brompt is now a stable, feature-complete LLM gateway. The following capabilities are shipped:
 
@@ -552,7 +738,7 @@ matrix:
 
 ---
 
-## 9. License
+## 12. License
 
 MIT License — see [LICENSE](LICENSE) for details.
 
