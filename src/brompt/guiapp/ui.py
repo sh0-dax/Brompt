@@ -3,7 +3,45 @@
 import tkinter as tk
 from tkinter import ttk
 
-from .theme import BG, BG_CARD, BG_HEADER, BORDER, CYAN, GREEN, MUTED, RED, TEXT, INPUT_BG
+from .theme import BG, BG_CARD, BG_HEADER, BORDER, CYAN, GREEN, MUTED, RED, TEXT, INPUT_BG, TOOLTIP_BG
+
+
+class ToolTip:
+    """Hover tooltip for tkinter widgets."""
+
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tip_window = None
+        self._after_id = None
+        widget.bind("<Enter>", self._enter, add="+")
+        widget.bind("<Leave>", self._leave, add="+")
+
+    def _enter(self, event):
+        self._schedule()
+
+    def _schedule(self):
+        self._after_id = self.widget.after(500, self._show)
+
+    def _leave(self, event):
+        if self._after_id:
+            self.widget.after_cancel(self._after_id)
+            self._after_id = None
+        if self.tip_window:
+            self.tip_window.destroy()
+            self.tip_window = None
+
+    def _show(self):
+        if self.tip_window:
+            return
+        x = self.widget.winfo_rootx() + 16
+        y = self.widget.winfo_rooty() + 8
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.geometry(f"+{x}+{y}")
+        tk.Label(tw, text=self.text, bg=TOOLTIP_BG, fg=TEXT,
+                 font=("Consolas", 8), padx=6, pady=2).pack()
+
 
 DOCS_TEXT = """
   BROMPT ENGINE — QUICK REFERENCE
@@ -244,13 +282,19 @@ def build_content_area(parent):
     chat_text.configure(yscrollcommand=chat_scroll.set)
     chat_text.configure(state=tk.DISABLED)
 
-    chat_bottom = tk.Frame(chat_frame, bg=BG, height=34)
-    chat_entry = tk.Entry(
-        chat_bottom, bg=BG_CARD, fg=TEXT, insertbackground=TEXT,
-        font=("Consolas", 10), bd=1, relief=tk.FLAT,
-        disabledbackground=BG, disabledforeground=MUTED,
+    chat_bottom = tk.Frame(chat_frame, bg=BG, height=68)
+    chat_bottom.pack_propagate(False)
+    chat_input_frame = tk.Frame(chat_bottom, bg=BG)
+    chat_input_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 4), pady=4)
+    chat_input = tk.Text(
+        chat_input_frame, bg=BG_CARD, fg=TEXT, insertbackground=TEXT,
+        font=("Consolas", 10), bd=1, relief=tk.FLAT, height=3,
+        padx=4, pady=2, wrap=tk.WORD,
     )
-    chat_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4), pady=4)
+    chat_input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    chat_input_scroll = tk.Scrollbar(chat_input_frame, orient=tk.VERTICAL, command=chat_input.yview)
+    chat_input.configure(yscrollcommand=chat_input_scroll.set)
+    chat_input_scroll.pack(side=tk.RIGHT, fill=tk.Y)
     chat_send_btn = tk.Button(
         chat_bottom, text="Send", bg=CYAN, fg="#000000",
         font=("Consolas", 9, "bold"), bd=0, padx=8, cursor="hand2",
@@ -341,7 +385,25 @@ def build_content_area(parent):
         font=("Consolas", 9, "bold"), bd=0, padx=8, pady=3, cursor="hand2",
         activebackground="#4a90e0",
     )
-    save_btn.grid(row=row, column=0, sticky="e", padx=8, pady=(4, 8))
+    btn_row = tk.Frame(settings_inner, bg=BG)
+    btn_row.grid(row=row, column=0, sticky="e", padx=8, pady=(4, 8))
+    settings_inner.grid_columnconfigure(0, weight=1)
+
+    browse_btn = tk.Button(
+        btn_row, text="Browse...", bg=BG_CARD, fg=TEXT,
+        font=("Consolas", 9), bd=1, relief=tk.FLAT, padx=8, cursor="hand2",
+        activebackground=BORDER,
+    )
+    browse_btn.pack(side=tk.RIGHT, padx=(4, 0))
+
+    save_btn = tk.Button(
+        btn_row, text=" Save Config ", bg=CYAN, fg="#000000",
+        font=("Consolas", 9, "bold"), bd=0, padx=8, pady=3, cursor="hand2",
+        activebackground="#4a90e0",
+    )
+    save_btn.pack(side=tk.RIGHT)
+
+    row += 1
 
     return {
         "frame": frame,
@@ -354,7 +416,8 @@ def build_content_area(parent):
         "chat_text": chat_text,
         "chat_scroll": chat_scroll,
         "chat_bottom": chat_bottom,
-        "chat_entry": chat_entry,
+        "chat_input": chat_input,
+        "chat_input_scroll": chat_input_scroll,
         "chat_send_btn": chat_send_btn,
         "settings_frame": settings_frame,
         "settings_canvas": settings_canvas,
@@ -368,6 +431,7 @@ def build_content_area(parent):
         "template_menu": template_menu,
         "config_text": config_text,
         "save_btn": save_btn,
+        "browse_btn": browse_btn,
     }
 
 

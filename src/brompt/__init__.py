@@ -1,6 +1,6 @@
 """Brompt — LLM prompt engine with a unified widget interface."""
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __author__ = "Brompt Team"
 
 from .widget import BromptWidget, PromptResult

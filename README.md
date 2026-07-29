@@ -92,6 +92,27 @@ no blocklist is. Treat it as a cheap first filter, not a guarantee, and
 pair it with the output sanitizer and least-privilege tool/permission
 design on the application side.
 
+### Request Flow
+
+```mermaid
+graph TD
+    A[Client] --> B[Rate Limiter]
+    B --> C[Security Engine]
+    C --> D{Injection Classifier?}
+    D -- Opt-in --> E[LLM-based Semantic Check]
+    D -- Skip --> F[Memory Manager]
+    E --> F
+    F --> G[Circuit Breaker]
+    G --> H[Model Router]
+    H --> I[Provider: OpenAI / Anthropic / Groq]
+    I --> J[Response]
+    J --> K[Output Sanitizer]
+    K --> L[Audit Log]
+    L --> M[Client]
+    G -- Open --> N[Fallback / Error]
+    N --> L
+```
+
 ### Core Architecture Pillars:
 
 | Pillar | Description |
@@ -104,8 +125,13 @@ design on the application side.
 | **Template Engine** | Variable interpolation, filters (`upper`, `json`, `now`, etc.), conditionals, loops — 6 built-in prompt templates |
 | **Hooks/Middleware** | Pipeline hooks (Logging, Timing, Validation, Audit, RateLimit, Security) with before/after execution |
 | **Observability** | Distributed tracing, Prometheus-format metrics, alert rules with condition evaluation |
+| **Circuit Breaker** | CLOSED/OPEN/HALF_OPEN state machine protecting providers from cascading failures; fallback support |
+| **Model Router** | Heuristic complexity classifier (word count, code/math markers, analytical keywords) with 4 strategies: CHEAPEST, FASTEST, BEST_QUALITY, FALLBACK |
+| **Semantic Classifier** | Opt-in LLM-based injection classifier — catches paraphrased attacks the regex layer misses |
+| **Pricing & Optimization** | Cost estimation per model, token optimization with caching, savings tracking |
 | **CLI (Typer)** | 8 commands: `chat`, `run`, `history`, `audit`, `status`, `templates`, `config`, `clear` |
 | **Web UI** | Streamlit-based interface with chat panel, metrics dashboard, audit viewer, template browser |
+| **Tkinter GUI** | Always-on-top floating widget with Docs, Live, Chart, Chat, Settings tabs |
 
 ---
 
@@ -134,6 +160,11 @@ Brompt/
 │       ├── widget.py                 # Unified BromptWidget entry point
 │       ├── hooks.py                  # Hooks/middleware system (Logging, Timing, Validation, etc.)
 │       ├── observability.py          # Tracing, metrics (Prometheus), alert management
+│       ├── circuit_breaker.py        # CLOSED/OPEN/HALF_OPEN state machine with fallback
+│       ├── router.py                 # ModelRouter — heuristic complexity classification, 4 strategies
+│       ├── classifier.py             # LLM-based semantic injection classifier (opt-in)
+│       ├── pricing.py                # Cost estimation per provider/model
+│       ├── optimizer.py              # Token optimization and compression
 │       ├── core/
 │       │   ├── __init__.py           # Re-exports BromptEngine
 │       │   ├── engine.py             # Main Execution Runtime Engine
@@ -152,6 +183,11 @@ Brompt/
 │       │   ├── __init__.py           # CLI package
 │       │   └── main.py               # Typer-based CLI (8 commands)
 │       ├── guiapp/                   # Tkinter GUI application
+│       │   ├── __init__.py           # BromptWidget — floating always-on-top panel
+│       │   ├── ui.py                 # Tab bar, title bar, resize grip, tooltip, keyboard bindings
+│       │   ├── chart.py              # ChartEngine — 5 chart types (bar, line, area, stacked, donut)
+│       │   ├── theme.py              # Design tokens (colors, fonts, spacing)
+│       │   └── badge.py              # System tray / Toplevel badge for minimize
 │       ├── api/                      # FastAPI REST API server
 │       └── feedback/                 # Feedback loop system
 ├── webui/
@@ -291,7 +327,7 @@ If none are set, the engine runs in **dry-run / validation-only mode** — input
 
 ## 6. API Reference
 
-### `BromptEngine(config_path, provider=None, async_provider=None)`
+### `BromptEngine(config_path, provider=None, async_provider=None, rate_limiter=None, injection_classifier=None, circuit_breaker=None)`
 
 Core runtime entry point. Loads YAML manifest and initializes all subsystems.
 
@@ -353,6 +389,39 @@ SHA-256 hash-chained, append-only audit log.
 | `record(event, state_id, is_secure, detail=None)` | `dict` | Append a tamper-evident record |
 | `verify()` | `bool` | Replay chain; `False` if tampered |
 | `read_all()` | `list[dict]` | Read all entries |
+
+### `CircuitBreaker(failure_threshold=5, recovery_timeout=30.0, half_open_max_calls=3)`
+
+Protects providers from cascading failures with a CLOSED/OPEN/HALF_OPEN state machine.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `failure_threshold` | `int` | `5` | Consecutive failures before opening the circuit |
+| `recovery_timeout` | `float` | `30.0` | Seconds before transitioning to HALF_OPEN |
+| `half_open_max_calls` | `int` | `3` | Probe requests allowed in HALF_OPEN state |
+
+| Method | Returns | Description |
+|---|---|---|
+| `call(coro, fallback=None)` | `Any` | Async call; raises `CircuitBreakerOpenError` if open |
+| `call_sync(fn, args=(), kwargs={}, fallback=None)` | `Any` | Sync counterpart |
+
+### `ModelRouter(profiles=None, strategy=RoutingStrategy.CHEAPEST)`
+
+Routes prompts to the optimal provider based on complexity classification.
+
+| Method | Returns | Description |
+|---|---|---|
+| `classify_complexity(text)` | `ComplexityLevel` | Heuristic: word count, code/math markers, analytical keywords |
+| `score_providers(text)` | `list[Route]` | Ranked list of (provider, model, score, estimated_cost) |
+| `route(text, strategy=None)` | `Route` | Select provider by strategy (CHEAPEST / FASTEST / BEST_QUALITY / FALLBACK) |
+
+### `InjectionClassifier(provider, model=None)`
+
+Opt-in LLM-based semantic injection detector — catches paraphrased attacks.
+
+| Method | Returns | Description |
+|---|---|---|
+| `is_blocked(text)` | `ClassificationResult \| None` | `None` if unavailable; raises `InjectionClassificationError` on failure |
 
 ---
 
@@ -459,6 +528,14 @@ streamlit run webui/streamlit_app.py
 
 Opens a browser-based interface with chat panel, metrics dashboard, audit log viewer, and template browser.
 
+### Tkinter GUI
+
+```bash
+python -m brompt.guiapp [--live]
+```
+
+Always-on-top floating widget with 5 tabs (Docs, Live Status, Charts, Chat, Settings), system tray minimize, and live engine monitoring.
+
 ---
 
 ## 7. CI/CD Pipeline
@@ -487,9 +564,12 @@ matrix:
 - ✅ Template engine with filters, conditionals, loops
 - ✅ Hooks/middleware pipeline (before/after execution)
 - ✅ Observability (tracing, Prometheus metrics, alert rules)
-- ✅ Typer CLI (8 commands) + Streamlit web UI
+- ✅ Typer CLI (8 commands) + Streamlit web UI + Tkinter GUI
+- ✅ Circuit Breaker (CLOSED/OPEN/HALF_OPEN state machine with fallback)
+- ✅ Model Router (heuristic complexity classification, 4 routing strategies)
+- ✅ Redis caching (key-value with in-process LRU/SmartCache fallback)
+- ✅ LLM-based semantic injection classifier (opt-in, catches paraphrased attacks)
 - ⚠️ **Pending:** Distributed rate limiting for multi-instance deployments
-- ⚠️ **Pending:** Injection detection beyond regex (lightweight classifier for paraphrased attacks)
 
 ---
 

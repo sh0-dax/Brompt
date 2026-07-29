@@ -4,10 +4,14 @@ Always-on-top dark-themed panel with Docs, Live, Chart, Chat, and Settings tabs.
 Usage:  python -m brompt.guiapp [--live]
 """
 
+import json
+import os
 import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.filedialog as tkfiledialog
+import tkinter.messagebox as tkmessagebox
 from pathlib import Path
 
 from .badge import Badge
@@ -17,6 +21,7 @@ from .theme import (
     GREEN, MUTED, RED, REFRESH_MS, YELLOW, ACCENT, SAVINGS_GREEN, TEXT,
 )
 from .ui import (
+    ToolTip,
     build_title_bar,
     build_tab_bar,
     build_chart_toolbar,
@@ -24,6 +29,7 @@ from .ui import (
     build_resize_grip,
     bind_keyboard,
     PROVIDER_NAMES,
+    DOCS_TEXT,
 )
 
 from brompt.widget import BromptWidget as BackendPromptWidget
@@ -93,6 +99,7 @@ class BromptWidget:
 
         # Phase 2-4: Provider, Backend, Savings, Templates
         self._backend = None
+        self._backend_lock = threading.RLock()
         self._provider_type = PROVIDER_NAMES[0]
         self._api_key = ""
         self._selected_template = ""
@@ -100,6 +107,10 @@ class BromptWidget:
         self._total_cost_saved = 0.0
         self._chat_messages = []
         self._template_names = []
+        self._loading = False
+        self._geom_file = Path.home() / ".brompt_geometry.json"
+
+        self._restore_geometry()
 
         # Chart engine
         self.chart_engine = ChartEngine()
@@ -181,15 +192,31 @@ class BromptWidget:
         # Wire chat send
         c = self.content
         c["chat_send_btn"].configure(command=self._send_chat)
-        c["chat_entry"].bind("<Return>", lambda e: self._send_chat())
+        c["chat_input"].bind("<Control-Return>", self._on_ctrl_enter)
 
         # Wire settings
         c["save_btn"].configure(command=self._save_config)
+        c["browse_btn"].configure(command=self._browse_config)
         c["provider_menu"].bind("<<ComboboxSelected>>", self._on_provider_change)
         c["template_menu"].bind("<<ComboboxSelected>>", self._on_template_change)
 
         # Phase 3-4: Load template list
         self._refresh_template_list()
+
+        # Load DOCS.md if available
+        self._load_docs_from_file()
+
+        # Tooltips
+        ToolTip(self.mini_btn, "Minimize to system tray (Ctrl+M)")
+        ToolTip(self.close_btn, "Quit (Ctrl+Q)")
+        ToolTip(c["chat_send_btn"], "Send message (Ctrl+Enter)")
+        ToolTip(c["save_btn"], "Save configuration to agent.brompt.yaml")
+        ToolTip(c["browse_btn"], "Browse for a YAML config file")
+        tab_help = {"docs": "Quick reference (Ctrl+D)", "live": "Engine status (Ctrl+L)",
+                     "chart": "Analytics charts (Ctrl+C)", "chat": "Chat with engine (Ctrl+H)",
+                     "settings": "Configuration (Ctrl+S)"}
+        for name, btn in self.tab_buttons.items():
+            ToolTip(btn, tab_help.get(name, name))
 
         # Chart toolbar (hidden until chart tab is active)
         self.chart_bar, self._chart_type_btns, self._chart_series_btns = build_chart_toolbar(
@@ -197,6 +224,15 @@ class BromptWidget:
             on_redraw=lambda: self._refresh_live(),
         )
         self.chart_bar.pack_forget()
+
+        chart_tips = {"bar": "Bar chart", "line": "Line chart", "area": "Area chart",
+                      "stacked": "Stacked area", "donut": "Donut chart"}
+        for ct, btn in self._chart_type_btns.items():
+            ToolTip(btn, chart_tips.get(ct, ct))
+        series_tips = {"activity": "Activity (Secure vs Rejected)", "latency": "Latency trend",
+                       "tokens": "Token count trend"}
+        for ds, btn in self._chart_series_btns.items():
+            ToolTip(btn, series_tips.get(ds, ds))
 
         # Resize grip
         self.grip = build_resize_grip(
@@ -272,7 +308,7 @@ class BromptWidget:
             c["chat_text"].pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             c["chat_scroll"].pack(side=tk.RIGHT, fill=tk.Y)
             c["chat_bottom"].pack(fill=tk.X)
-            c["chat_entry"].focus_set()
+            c["chat_input"].focus_set()
 
         elif tab == "settings":
             c["settings_frame"].pack(fill=tk.BOTH, expand=True)
@@ -312,6 +348,10 @@ class BromptWidget:
         dh = event.y_root - self._resize_y
         self.root.geometry(f"{max(280, self._resize_w + dw)}x{max(300, self._resize_h + dh)}")
 
+    def _on_ctrl_enter(self, event=None):
+        self._send_chat()
+        return "break"
+
     # ------------------------------------------------------------------
     # Minimize / Badge (Phase 6: system tray)
     # ------------------------------------------------------------------
@@ -336,6 +376,7 @@ class BromptWidget:
         self.is_mini = False
 
     def _quit(self):
+        self._save_geometry()
         self._stop = True
         self.badge.hide()
         self.root.destroy()
@@ -403,66 +444,83 @@ class BromptWidget:
 
     def _ensure_backend(self) -> bool:
         """Create BackendPromptWidget if not yet created."""
-        if self._backend is not None:
-            return True
-        self._api_key = self.content["api_var"].get()
-        factory = PROVIDER_FACTORIES.get(self._provider_type)
-        if not factory:
-            self._append_chat("  ❌ Unknown provider\n")
-            return False
-        try:
-            provider = factory(self._api_key)
-            self._backend = BackendPromptWidget(
-                provider=provider,
-                enable_token_optimization=True,
-                enable_cache=True,
-                enable_auto_detect=True,
-                enable_streaming=False,
-            )
-            self.status_label.configure(text="● connected", fg=GREEN)
-            return True
-        except Exception as exc:
-            self._append_chat(f"  ❌ Init error: {exc}\n")
-            self.status_label.configure(text="● error", fg=RED)
-            return False
+        with self._backend_lock:
+            if self._backend is not None:
+                return True
+            self._api_key = self.content["api_var"].get()
+            factory = PROVIDER_FACTORIES.get(self._provider_type)
+            if not factory:
+                self._append_chat("  ❌ Unknown provider\n")
+                return False
+            # Validation: cloud providers need a non-empty API key
+            is_local = self._provider_type in ("Ollama", "LM Studio")
+            if not is_local and not self._api_key.strip():
+                self._append_chat("  ❌ API key required for this provider\n")
+                return False
+            try:
+                provider = factory(self._api_key)
+                self._backend = BackendPromptWidget(
+                    provider=provider,
+                    enable_token_optimization=True,
+                    enable_cache=True,
+                    enable_auto_detect=True,
+                    enable_streaming=False,
+                )
+                self.status_label.configure(text="● connected", fg=GREEN)
+                return True
+            except Exception as exc:
+                self._append_chat(f"  ❌ Init error: {exc}\n")
+                self.status_label.configure(text="● error", fg=RED)
+                return False
 
     def _send_chat(self):
-        text = self.content["chat_entry"].get().strip()
+        if self._loading:
+            return
+        text = self.content["chat_input"].get("1.0", "end-1c").strip()
         if not text:
             return
 
-        self.content["chat_entry"].delete(0, tk.END)
+        self.content["chat_input"].delete("1.0", tk.END)
+        self._loading = True
+        self.status_label.configure(text="● sending...", fg=YELLOW)
 
-        if self._backend is None and not self._ensure_backend():
-            return
-
-        self._append_chat(f"  You: {text}\n")
-
+        ok = False
         try:
-            result = self._backend.prompt(text)
-            response = result.response or "(no response)"
+            with self._backend_lock:
+                if self._backend is None and not self._ensure_backend():
+                    return
 
-            self._append_chat(f"  Bot: {response}\n")
+                self._append_chat(f"  You: {text}\n")
 
-            # Phase 3: Auto-detect info
-            if result.auto_detected and result.detected_task:
-                conf = result.detection_confidence or 0
-                self._append_chat(f"  🧠 {result.detected_task} ({conf:.0%})\n")
+                try:
+                    result = self._backend.prompt(text)
+                    response = result.response or "(no response)"
 
-            # Phase 3: Savings
-            saved_tok = result.tokens_saved or 0
-            saved_cost = result.cost_saved or 0
-            if saved_tok > 0:
-                self._total_saved_tokens += saved_tok
-                self._total_cost_saved += saved_cost
-                pct = result.savings_percent or 0
-                self._append_chat(f"  💰 Saved {saved_tok} tok (${saved_cost:.4f}) — {pct:.0f}% saved\n")
+                    self._append_chat(f"  Bot: {response}\n")
 
-            self._chat_messages.append({"role": "user", "content": text})
-            self._chat_messages.append({"role": "assistant", "content": response})
+                    if result.auto_detected and result.detected_task:
+                        conf = result.detection_confidence or 0
+                        self._append_chat(f"  🧠 {result.detected_task} ({conf:.0%})\n")
 
-        except Exception as exc:
-            self._append_chat(f"  Error: {exc}\n")
+                    saved_tok = result.tokens_saved or 0
+                    saved_cost = result.cost_saved or 0
+                    if saved_tok > 0:
+                        self._total_saved_tokens += saved_tok
+                        self._total_cost_saved += saved_cost
+                        pct = result.savings_percent or 0
+                        self._append_chat(f"  💰 Saved {saved_tok} tok (${saved_cost:.4f}) — {pct:.0f}% saved\n")
+
+                    self._chat_messages.append({"role": "user", "content": text})
+                    self._chat_messages.append({"role": "assistant", "content": response})
+                    ok = True
+
+                except Exception as exc:
+                    self._append_chat(f"  Error: {exc}\n")
+                    self.status_label.configure(text="● error", fg=RED)
+        finally:
+            self._loading = False
+            if ok:
+                self.status_label.configure(text="● connected", fg=GREEN)
 
     def _append_chat(self, msg: str):
         chat = self.content["chat_text"]
@@ -490,7 +548,14 @@ class BromptWidget:
         t.start()
 
     def _refresh_live(self):
-        is_chat_active = self._backend is not None
+        analytics = {}
+        with self._backend_lock:
+            is_chat_active = self._backend is not None
+            if is_chat_active:
+                try:
+                    analytics = self._backend.get_analytics()
+                except Exception:
+                    analytics = {}
 
         if self.engine is None and not is_chat_active:
             content = (
@@ -509,11 +574,7 @@ class BromptWidget:
             lines.append(f"  Status:     {'CONNECTED' if self.engine else 'CHAT-ONLY'}")
             lines.append(f"  Provider:   {self._provider_type}")
             if is_chat_active:
-                try:
-                    analytics = self._backend.get_analytics()
-                    lines.append(f"  Cache:      {analytics.get('cache_hit_rate', 0):.0f}% hit rate")
-                except Exception:
-                    pass
+                lines.append(f"  Cache:      {analytics.get('cache_hit_rate', 0):.0f}% hit rate")
 
             # Phase 3: Savings
             if self._total_saved_tokens > 0:
@@ -633,6 +694,67 @@ class BromptWidget:
             self.status_label.configure(text="● saved", fg=GREEN)
         except Exception as exc:
             self.status_label.configure(text=f"● save error", fg=RED)
+
+    # ------------------------------------------------------------------
+    # DOCS.md extraction
+    # ------------------------------------------------------------------
+
+    def _load_docs_from_file(self):
+        for base in (Path(__file__).parent, Path.cwd()):
+            p = base / "DOCS.md"
+            if p.exists():
+                try:
+                    text = p.read_text(encoding="utf-8")
+                    c = self.content
+                    c["docs_text"].configure(state=tk.NORMAL)
+                    c["docs_text"].delete("1.0", tk.END)
+                    c["docs_text"].insert("1.0", text.strip())
+                    c["docs_text"].configure(state=tk.DISABLED)
+                except Exception:
+                    pass
+                break
+
+    # ------------------------------------------------------------------
+    # Config file picker
+    # ------------------------------------------------------------------
+
+    def _browse_config(self):
+        path = tkfiledialog.askopenfilename(
+            title="Select Config File",
+            filetypes=[("YAML files", "*.yaml *.yml"), ("All files", "*.*")],
+            initialdir=str(Path.cwd()),
+        )
+        if not path:
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+            c = self.content
+            c["config_text"].delete("1.0", tk.END)
+            c["config_text"].insert("1.0", text)
+            self.status_label.configure(text=f"● loaded {Path(path).name}", fg=GREEN)
+        except Exception as exc:
+            tkmessagebox.showerror("Load Error", f"Could not read file:\n{exc}")
+
+    # ------------------------------------------------------------------
+    # Geometry persistence
+    # ------------------------------------------------------------------
+
+    def _save_geometry(self):
+        try:
+            geo = self.root.geometry()
+            data = {"geometry": geo}
+            self._geom_file.write_text(json.dumps(data), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _restore_geometry(self):
+        try:
+            if self._geom_file.exists():
+                data = json.loads(self._geom_file.read_text(encoding="utf-8"))
+                if "geometry" in data:
+                    self.root.geometry(data["geometry"])
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Run

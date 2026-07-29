@@ -114,9 +114,11 @@ class ChartEngine:
         start_x = max(pad, (w - pair_w) / 2)
 
         y1 = top + max_bar_h
-        for frac in (0.25, 0.5, 0.75, 1.0):
+        for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
             gy = y1 - frac * max_bar_h
             c.create_line(pad, gy, w - pad, gy, fill=BORDER, width=1)
+            c.create_text(pad - 4, gy, anchor="e", fill=MUTED,
+                          font=("Consolas", 7), text=f"{frac*100:.0f}%")
 
         for i, (label, count, color) in enumerate(items):
             x0 = start_x + i * (bar_w + gap)
@@ -151,6 +153,15 @@ class ChartEngine:
         label1 = self._series_label(0)
         label2 = self._series_label(1)
         is_single = self.data_series != "activity"
+
+        # Y-axis gridlines + labels
+        for i in range(5):
+            frac = i / 4
+            y = top + chart_h - frac * chart_h
+            c.create_line(pad + 10, y, w - pad, y, fill=BORDER, width=1)
+            val = max_val * frac
+            c.create_text(pad + 6, y, anchor="e", fill=MUTED,
+                          font=("Consolas", 7), text=f"{val:.0f}")
 
         # Build point lists
         pts_sec = []
