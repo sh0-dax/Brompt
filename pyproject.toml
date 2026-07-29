@@ -62,10 +62,15 @@ api = [
 redis = [
     "redis>=5.0.0",
 ]
+routing = [
+    "brompt-engine[all]",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=4.1.0",
+    "mypy>=1.8.0",
+    "pyright>=1.1.350",
     "ruff>=0.1.0",
     "anthropic>=0.40.0",
     "openai>=1.50.0",
@@ -84,6 +89,29 @@ brompt = "brompt.cli.main:cli_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+[tool.pyright]
+typeCheckingMode = "strict"
+reportMissingImports = false
+
+[tool.coverage.run]
+source = ["src/brompt"]
+branch = true
+omit = [
+    "src/brompt/_providers_legacy.py",
+    "src/brompt/_cli_legacy.py",
+    "src/brompt/guiapp/*",
+]
+
+[tool.coverage.report]
+fail_under = 70
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

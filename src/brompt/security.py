@@ -1,7 +1,9 @@
 """Security pipeline for prompt injection filtering and sanitization."""
 
+import base64
 import logging
 import re
+import unicodedata
 from typing import ClassVar
 
 logger = logging.getLogger("brompt.security")
@@ -9,6 +11,9 @@ logger = logging.getLogger("brompt.security")
 
 class SecurityViolationError(ValueError):
     """Custom exception raised when a security inspection fails."""
+
+
+_ZERO_WIDTH_CHARS = str.maketrans({c: None for c in "\u200b\u200c\u200d\u2060\ufeff\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u2028\u2029\u2061\u2062\u2063\u2064\u2066\u2067\u2068\u2069"})
 
 
 class SecurityEngine:
@@ -19,8 +24,15 @@ class SecurityEngine:
         (r"\breveal\s+(your\s+)?(system\s+)?prompt\b", "System Leakage Attempt"),
         (r"\breveal\s+internal\s+keys\b", "Credential Leakage Attempt"),
         (r"you\s+are\s+now\s+in\s+(developer|dan|god)\s+mode", "Jailbreak: Persona Switch"),
+        (r"\bdisregard\s+(all\s+|any\s+)?(prior|previous)\s+(instructions|directives|guidelines)\b", "Direct Injection: Instruction Override (variant)"),
+        (r"\boverride\s+(your\s+)?(core|safety|security|ethical)\s+(protocols?|guidelines?|instructions)\b", "Direct Injection: Safety Override"),
+        (r"\boutput\s+(your\s+)?(system\s+)?(prompt|instructions)\s+(verbatim|text|as.is|exactly)\b", "System Leakage Attempt (variant)"),
+        (r"\byou\s+(are|will)\s+now\s+(act\s+as|simulate|pretend\s+to\s+be)\b", "Jailbreak: Role-Play Bypass"),
+        (r"\bremove\s+(all\s+)?(restrictions?|limitations?|filtering|content.policy)\b", "Jailbreak: Restriction Removal"),
         (r"تجاهل\s+(جميع\s+)?التعليمات\s+السابقة", "Arabic: Instruction Override Attempt"),
         (r"أنت\s+(الآن\s+)?في\s+وضع\s+المطور", "Arabic: Developer Mode Bypass"),
+        (r"ignora\s+(tutte\s+)?le\s+istruzioni\s+precedenti", "Italian: Instruction Override Attempt"),
+        (r"ignore\s+(alle\s+)?(bisherigen\s+)?anweisungen", "German: Instruction Override Attempt"),
     ]
 
     OUTPUT_LEAK_PATTERNS: ClassVar[list[tuple[str, str]]] = [
@@ -29,11 +41,65 @@ class SecurityEngine:
         (r"AKIA[0-9A-Z]{16}", "AWS access key ID"),
         (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "Private key block"),
         (r"ghp_[A-Za-z0-9]{36}", "GitHub personal access token"),
+        (r"gho_[A-Za-z0-9]{36}", "GitHub OAuth access token"),
+        (r"xox[baprs]-[0-9A-Za-z-]{10,}", "Slack token"),
     ]
+
+    @classmethod
+    def _canonicalize(cls, text: str) -> str:
+        """Normalize text: NFKC Unicode normalization + strip zero-width chars."""
+        text = unicodedata.normalize("NFKC", text)
+        text = text.translate(_ZERO_WIDTH_CHARS)
+        return text
+
+    @classmethod
+    def _detect_base64(cls, text: str) -> bool:
+        """Heuristic detection of base64-encoded payloads."""
+        cleaned = text.strip()
+        if len(cleaned) < 40:
+            return False
+        base64_chars = 0
+        has_upper = has_lower = has_digit = has_symbol = False
+        for c in cleaned:
+            if c.isalnum() or c in "+/=":
+                base64_chars += 1
+            if c.isupper(): has_upper = True
+            if c.islower(): has_lower = True
+            if c.isdigit(): has_digit = True
+            if c in "+/=": has_symbol = True
+        char_class_count = sum([has_upper, has_lower, has_digit, has_symbol])
+        if char_class_count < 2:
+            return False
+        ratio = base64_chars / len(cleaned)
+        if ratio < 0.85:
+            return False
+        padding_ratio = cleaned.count("=") / len(cleaned)
+        if padding_ratio > 0.02:
+            return True
+        try:
+            decoded = base64.b64decode(cleaned, validate=True)
+            return 32 <= len(decoded) <= 4096
+        except Exception:
+            return False
+
+    @classmethod
+    def _normalize_for_regex(cls, text: str) -> str:
+        """Normalize text to catch obfuscated injections before regex matching."""
+        # Replace common leetspeak substitutions
+        subs = {
+            "0": "o", "1": "i", "3": "e", "4": "a", "5": "s",
+            "7": "t", "@": "a", "$": "s", "!": "i",
+        }
+        for old, new in subs.items():
+            text = text.replace(old, new)
+        return text
 
     @classmethod
     def sanitize(cls, text: str, max_payload_size_kb: int = 64) -> str:
         """Sanitizes user input and enforces strict safety rules.
+
+        Applies Unicode canonicalization, zero-width char stripping,
+        leetspeak normalization, base64 detection, and regex pattern matching.
 
         Raises:
             SecurityViolationError: If input matches a blocked pattern.
@@ -49,13 +115,21 @@ class SecurityEngine:
                 f"Payload violation: Size {payload_bytes} bytes exceeds limit of {max_bytes} bytes."
             )
 
+        normalized = cls._canonicalize(text)
+
+        if cls._detect_base64(normalized):
+            logger.warning("Security violation: Base64-encoded payload detected")
+            raise SecurityViolationError("Security Violation: [Base64-encoded payload detected]")
+
+        normalized_for_regex = cls._normalize_for_regex(normalized)
+
         for pattern, reason in cls.INJECTION_PATTERNS:
-            if re.search(pattern, text, re.IGNORECASE):
+            if re.search(pattern, normalized_for_regex, re.IGNORECASE):
                 logger.warning("Security violation: %s | pattern [%s]", reason, pattern)
                 raise SecurityViolationError(
                     f"Security Violation: [{reason}]"
                 )
-        return text.strip()
+        return normalized.strip()
 
     @classmethod
     def sanitize_output(cls, text: str) -> str:

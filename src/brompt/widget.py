@@ -3,14 +3,16 @@
 import hashlib
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from threading import Lock
 from typing import Optional, AsyncIterator
 
-from .config import WidgetConfig, ProviderConfig, GenerationConfig, ProviderType
+from .config import WidgetConfig, ProviderConfig, GenerationConfig, ProviderType, RoutingConfig
 from .providers import ProviderFactory, LLMProvider, ProviderResult
+from .router import ModelRouter, RoutingStrategy
 from .session import Session, SessionManager, Message
 from .pricing import estimate_cost
 from .optimizer import TokenOptimizer
@@ -71,9 +73,12 @@ class PromptResult:
 
     def to_dict(self) -> dict:
         return {
+            "user_input": self.user_input,
+            "generated_prompt": self.generated_prompt,
             "response": self.response,
             "template_id": self.template_id,
             "model": self.model,
+            "session_id": self.session_id,
             "tokens_used": self.tokens_used,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
@@ -82,19 +87,24 @@ class PromptResult:
             "plain_cost": self.plain_cost,
             "overhead_cost": round(self.cost - self.plain_cost, 6),
             "latency_ms": self.latency_ms,
-            "savings": {
-                "tokens": self.tokens_saved,
-                "cost": round(self.cost_saved, 6),
-                "percent": round(self.savings_percent, 1),
-            },
-            "auto_detect": {
-                "enabled": self.auto_detected,
-                "task": self.detected_task,
-                "confidence": round(self.detection_confidence, 4),
-            },
+            "finish_reason": self.finish_reason,
+            "feedback_id": self.feedback_id,
+            "tokens_saved": self.tokens_saved,
+            "cost_saved": self.cost_saved,
+            "savings_percent": self.savings_percent,
+            "auto_detected": self.auto_detected,
+            "detected_task": self.detected_task,
+            "detection_confidence": self.detection_confidence,
             "cached": self.cached,
+            "metadata": self.metadata,
             "timestamp": self.timestamp.isoformat(),
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PromptResult":
+        valid_fields = cls.__dataclass_fields__
+        filtered = {k: v for k, v in data.items() if k in valid_fields}
+        return cls(**filtered)
 
     @property
     def cost_breakdown(self) -> dict:
@@ -231,6 +241,78 @@ class SmartCache:
         return len(self._cache)
 
 
+class RedisCache:
+    """Distributed cache backed by Redis, falling back to in-process on failure.
+
+    Uses the existing ``redis`` optional dependency (same as ``RedisRateLimiter``).
+    Key format: ``brompt:cache:<SHA256 hash>`` with configurable TTL.
+    """
+
+    def __init__(self, redis_client, key_prefix: str = "brompt:cache:", default_ttl: int = 3600):
+        self._redis = redis_client
+        self._prefix = key_prefix
+        self._default_ttl = default_ttl
+        self._hits = 0
+        self._misses = 0
+        self._local: dict[str, tuple[PromptResult, float, int]] = {}
+
+    def _make_key(self, user_input: str, template: str, model: str, context: Optional[dict] = None) -> str:
+        data = f"{user_input}|{template}|{model}|{json.dumps(context or {}, sort_keys=True)}"
+        return hashlib.sha256(data.encode()).hexdigest()
+
+    def get(self, user_input: str, template: str, model: str, context: Optional[dict] = None) -> Optional[PromptResult]:
+        key = self._make_key(user_input, template, model, context)
+        try:
+            raw = self._redis.get(f"{self._prefix}{key}")
+            if raw is not None:
+                data = json.loads(raw)
+                if "timestamp" in data and isinstance(data["timestamp"], str):
+                    data["timestamp"] = datetime.fromisoformat(data["timestamp"])
+                result = PromptResult.from_dict(data)
+                result.cached = True
+                self._hits += 1
+                return result
+        except Exception:
+            pass
+        self._misses += 1
+        return None
+
+    def set(self, user_input: str, template: str, model: str, context: Optional[dict], result: PromptResult):
+        key = self._make_key(user_input, template, model, context)
+        try:
+            self._redis.setex(
+                f"{self._prefix}{key}",
+                self._default_ttl,
+                json.dumps(result.to_dict(), default=str),
+            )
+        except Exception:
+            pass
+
+    def clear(self):
+        try:
+            cursor = 0
+            while True:
+                cursor, keys = self._redis.scan(cursor, match=f"{self._prefix}*")
+                if keys:
+                    self._redis.delete(*keys)
+                if cursor == 0:
+                    break
+        except Exception:
+            pass
+
+    @property
+    def hit_rate(self) -> float:
+        total = self._hits + self._misses
+        return self._hits / total if total > 0 else 0.0
+
+    @property
+    def size(self) -> int:
+        return len(self._local)
+
+    def __len__(self) -> int:
+        return len(self._local)
+
+
 class BromptWidget:
     def __init__(
         self,
@@ -257,17 +339,34 @@ class BromptWidget:
             session_ttl_minutes=self.config.session.session_ttl_minutes,
             auto_cleanup=self.config.session.auto_cleanup,
         )
+        self._router: Optional[ModelRouter] = None
+        if self.config.routing.enabled:
+            self._router = ModelRouter()
+
         if self._cache_enabled and self.config.cache.enabled:
-            if hasattr(self.config.cache, 'strategy') and self.config.cache.strategy == "smart":
-                self._cache = SmartCache(
-                    max_entries=self.config.cache.max_entries,
-                    default_ttl=self.config.cache.ttl_seconds,
-                )
-            else:
-                self._cache = LRUCache(
-                    max_entries=self.config.cache.max_entries,
-                    ttl_seconds=self.config.cache.ttl_seconds,
-                )
+            redis_url = self.config.cache.redis_url or os.getenv("BROMPT_REDIS_URL")
+            if redis_url:
+                try:
+                    import redis as _redis_lib
+                    rc = _redis_lib.from_url(redis_url, decode_responses=True)
+                    self._cache = RedisCache(
+                        rc, default_ttl=self.config.cache.ttl_seconds,
+                    )
+                    logger.info("Redis cache initialised at %s", redis_url)
+                except Exception as exc:
+                    logger.warning("Redis unavailable, falling back to in-process cache: %s", exc)
+                    self._cache = None
+            if self._cache is None:
+                if hasattr(self.config.cache, 'strategy') and self.config.cache.strategy == "smart":
+                    self._cache = SmartCache(
+                        max_entries=self.config.cache.max_entries,
+                        default_ttl=self.config.cache.ttl_seconds,
+                    )
+                else:
+                    self._cache = LRUCache(
+                        max_entries=self.config.cache.max_entries,
+                        ttl_seconds=self.config.cache.ttl_seconds,
+                    )
         else:
             self._cache = None
         self._feedback = None
@@ -330,7 +429,7 @@ class BromptWidget:
             # Cache check
             cached = None
             if self._cache:
-                if isinstance(self._cache, SmartCache):
+                if isinstance(self._cache, (SmartCache, RedisCache)):
                     cached = self._cache.get(user_input, template, self.config.provider.model, context)
                 else:
                     cached = self._cache.get(user_input, template, context)
@@ -414,7 +513,7 @@ class BromptWidget:
                               "completion_tokens": completion_tokens},
                 )
             if self._cache and provider_result.is_success:
-                if isinstance(self._cache, SmartCache):
+                if isinstance(self._cache, (SmartCache, RedisCache)):
                     self._cache.set(user_input, template, self.config.provider.model, context, result)
                 else:
                     self._cache.set(user_input, template, context, result)

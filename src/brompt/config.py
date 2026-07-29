@@ -60,12 +60,25 @@ class GenerationConfig:
 
 
 @dataclass
+class RoutingConfig:
+    enabled: bool = False
+    strategy: str = "cheapest"
+    fallback_provider: Optional[str] = None
+
+    def __post_init__(self):
+        valid = {"cheapest", "fastest", "best_quality", "fallback"}
+        if self.strategy not in valid:
+            raise ValueError(f"strategy must be one of {valid}, got {self.strategy!r}")
+
+
+@dataclass
 class CacheConfig:
     enabled: bool = True
     ttl_seconds: int = 3600
     max_entries: int = 1000
     strategy: Literal["lru", "lfu", "fifo"] = "lru"
     exclude_templates: list[str] = field(default_factory=list)
+    redis_url: Optional[str] = None
 
 
 @dataclass
@@ -113,6 +126,7 @@ class WidgetConfig:
     session: SessionConfig = field(default_factory=SessionConfig)
     hooks: HooksConfig = field(default_factory=HooksConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    routing: RoutingConfig = field(default_factory=RoutingConfig)
     debug: bool = False
     default_template: str = "default"
 
@@ -129,6 +143,10 @@ class WidgetConfig:
             ),
             cache=CacheConfig(
                 enabled=os.getenv("BROMPT_CACHE_ENABLED", "true").lower() == "true",
+                redis_url=os.getenv("BROMPT_REDIS_URL") or None,
+            ),
+            routing=RoutingConfig(
+                enabled=os.getenv("BROMPT_ROUTING_ENABLED", "false").lower() == "true",
             ),
             debug=os.getenv("BROMPT_DEBUG", "false").lower() == "true",
         )

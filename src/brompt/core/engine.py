@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from ..audit import AuditLog
+from ..circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from ..classifier import InjectionClassificationError, InjectionClassifier
 from ..memory import MemoryManager
 from .._providers_legacy import LLMProvider, ProviderError, build_provider_from_env
@@ -33,6 +34,7 @@ class BromptEngine:
         audit_log_path: str | None = None,
         rate_limiter: RateLimiterBackend | None = None,
         injection_classifier: InjectionClassifier | None = None,
+        circuit_breaker: CircuitBreaker | None = None,
     ):
         manifest_file = Path(config_path)
         if not manifest_file.exists():
@@ -66,6 +68,7 @@ class BromptEngine:
             self.provider: LLMProvider | None = provider
         self.async_provider: LLMProvider | None = async_provider
         self.injection_classifier: InjectionClassifier | None = injection_classifier
+        self.circuit_breaker: CircuitBreaker | None = circuit_breaker
         self.audit = AuditLog(
             audit_log_path or str(manifest_file.parent / f"{manifest_file.stem}.audit.log")
         )
@@ -117,6 +120,8 @@ class BromptEngine:
             event, msg = "rate_limited", str(err)
         elif isinstance(err, SecurityViolationError):
             event, msg = "security_violation", str(err)
+        elif isinstance(err, CircuitBreakerOpenError):
+            event, msg = "circuit_open", str(err)
         elif isinstance(err, ValueError):
             event, msg = "value_error", str(err)
         else:
@@ -148,13 +153,20 @@ class BromptEngine:
         if self.provider is not None:
             try:
                 t0 = time.time()
-                reply = self.provider.generate(self.memory.get_history(), system=system_prompt)
+                if self.circuit_breaker is not None:
+                    reply = self.circuit_breaker.call_sync(
+                        self.provider.generate,
+                        args=(self.memory.get_history(),),
+                        kwargs={"system": system_prompt},
+                    )
+                else:
+                    reply = self.provider.generate(self.memory.get_history(), system=system_prompt)
                 self._last_latency_ms = (time.time() - t0) * 1000
                 reply = SecurityEngine.sanitize_output(reply)
                 self.memory.add_turn("assistant", reply)
                 output_payload["llm_response"] = reply
                 output_payload["provider_used"] = True
-            except ProviderError as err:
+            except (ProviderError, CircuitBreakerOpenError) as err:
                 logger.error("Provider call failed: %s", err)
                 self.audit.record("provider_error", self.state_id, False, str(err),
                                   latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used)
@@ -189,11 +201,22 @@ class BromptEngine:
         try:
             t0 = time.time()
             if self.async_provider is not None:
-                reply = await self.async_provider.agenerate(history, system=system_prompt)
+                coro = self.async_provider.agenerate(history, system=system_prompt)
+                if self.circuit_breaker is not None:
+                    reply = await self.circuit_breaker.call(coro)
+                else:
+                    reply = await coro
             elif self.provider is not None:
-                reply = await asyncio.to_thread(self.provider.generate, history, system_prompt)
+                if self.circuit_breaker is not None:
+                    reply = self.circuit_breaker.call_sync(
+                        self.provider.generate,
+                        args=(history,),
+                        kwargs={"system": system_prompt},
+                    )
+                else:
+                    reply = await asyncio.to_thread(self.provider.generate, history, system_prompt)
             self._last_latency_ms = (time.time() - t0) * 1000 if reply else 0.0
-        except ProviderError as err:
+        except (ProviderError, CircuitBreakerOpenError) as err:
             logger.error("Provider call failed: %s", err)
             self.audit.record("provider_error", self.state_id, False, str(err),
                               latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used)
