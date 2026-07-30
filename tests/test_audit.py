@@ -1,4 +1,8 @@
-"""Unit tests for the hash-chained audit log."""
+"""Unit tests for the hash-chained audit log (+ optional HMAC signing)."""
+
+import json
+
+import pytest
 
 from brompt.audit import AuditLog
 
@@ -25,8 +29,6 @@ class TestAuditLog:
         assert log.verify() is True
 
     def test_verify_fails_on_tampered_log(self, tmp_path):
-        import json
-
         path = tmp_path / "a.log"
         log = AuditLog(str(path))
         log.record("execute", "s1", True)
@@ -42,4 +44,56 @@ class TestAuditLog:
 
     def test_verify_empty_log(self, tmp_path):
         log = AuditLog(str(tmp_path / "a.log"))
+        assert log.verify() is True
+
+    # ------------------------------------------------------------------
+    # HMAC signing tests
+    # ------------------------------------------------------------------
+
+    def test_is_signed_true_when_key_provided(self):
+        log = AuditLog(secret_key="test-key")
+        assert log.is_signed is True
+
+    def test_is_signed_false_by_default(self):
+        log = AuditLog()
+        assert log.is_signed is False
+
+    def test_hmac_verify_passes_with_correct_key(self, tmp_path):
+        path = str(tmp_path / "hmac.log")
+        log = AuditLog(path, secret_key="correct-key")
+        log.record("execute", "s1", True)
+        log.record("execute", "s2", True)
+        assert log.verify() is True
+
+    def test_hmac_verify_fails_with_wrong_key(self, tmp_path):
+        path = str(tmp_path / "hmac.log")
+        log = AuditLog(path, secret_key="correct-key")
+        log.record("execute", "s1", True)
+        log.record("execute", "s2", True)
+
+        wrong_log = AuditLog(path, secret_key="wrong-key")
+        assert wrong_log.verify() is False
+
+    def test_hmac_downgrade_attack_detected(self, tmp_path):
+        path = tmp_path / "hmac.log"
+        log = AuditLog(str(path), secret_key="correct-key")
+        log.record("execute", "s1", True)
+        log.record("execute", "s2", True)
+
+        lines = path.read_text(encoding="utf-8").splitlines()
+        stripped = []
+        for line in lines:
+            record = json.loads(line)
+            record.pop("hmac", None)
+            stripped.append(json.dumps(record))
+        path.write_text("\n".join(stripped) + "\n", encoding="utf-8")
+
+        tampered = AuditLog(str(path), secret_key="correct-key")
+        assert tampered.verify() is False
+
+    def test_hmac_unsigned_entries_pass_when_no_key(self, tmp_path):
+        path = str(tmp_path / "mixed.log")
+        log = AuditLog(path)
+        log.record("execute", "s1", True)
+        log.record("execute", "s2", True)
         assert log.verify() is True

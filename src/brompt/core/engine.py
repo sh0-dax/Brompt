@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -32,6 +33,7 @@ class BromptEngine:
         provider: LLMProvider | None | object = _UNSET,
         async_provider: LLMProvider | None = None,
         audit_log_path: str | None = None,
+        audit_secret_key: str | None = None,
         rate_limiter: RateLimiterBackend | None = None,
         injection_classifier: InjectionClassifier | None = None,
         circuit_breaker: CircuitBreaker | None = None,
@@ -70,7 +72,8 @@ class BromptEngine:
         self.injection_classifier: InjectionClassifier | None = injection_classifier
         self.circuit_breaker: CircuitBreaker | None = circuit_breaker
         self.audit = AuditLog(
-            audit_log_path or str(manifest_file.parent / f"{manifest_file.stem}.audit.log")
+            audit_log_path or str(manifest_file.parent / f"{manifest_file.stem}.audit.log"),
+            secret_key=audit_secret_key or os.getenv("BROMPT_AUDIT_SECRET"),
         )
         self.state_id = f"state_{uuid.uuid4().hex[:8]}"
         self._last_latency_ms = 0.0
@@ -201,9 +204,12 @@ class BromptEngine:
 
         self._last_completion_tokens = len(reply) // 4 if reply else 0
         self._last_tokens_used = self._last_prompt_tokens + self._last_completion_tokens
+        messages_sent = override_messages if override_messages is not None else self.memory.get_history()
         self.audit.record("execute", self.state_id, True,
-                          latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used)
+                          latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
+                          messages=messages_sent)
         return ExecutionResult(state_id=self.state_id, is_secure=True, data=output_payload)
+
 
     # -- asynchronous path --------------------------------------------------
 
@@ -264,5 +270,26 @@ class BromptEngine:
         self._last_completion_tokens = len(reply) // 4 if reply else 0
         self._last_tokens_used = self._last_prompt_tokens + self._last_completion_tokens
         self.audit.record("execute", self.state_id, True,
-                          latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used)
+                          latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
+                          messages=history)
         return ExecutionResult(state_id=self.state_id, is_secure=True, data=output_payload)
+
+    # -- replay ----------------------------------------------------------------
+
+    def replay(self, entry_hash: str, provider=None, system: str | None = None) -> dict:
+        """Re-run a previous audit entry on a (possibly different) provider.
+
+        Parameters
+        ----------
+        entry_hash :
+            The ``entry_hash`` of the audit entry to replay.
+        provider :
+            Provider to use for the re-run. Falls back to ``self.provider``.
+        system :
+            Optional system prompt forwarded to the provider.
+
+        Returns
+        -------
+        A dict with keys ``original`` and ``replayed``.
+        """
+        return self.audit.replay(entry_hash, provider or self.provider, system=system)
