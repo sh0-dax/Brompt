@@ -127,7 +127,7 @@ design on the application side.
 ### Request Flow
 
 ```mermaid
-graph TD
+flowchart TD
     A["Client App"] --> B["Rate Limiter"]
     B --> C["Security Engine"]
     C --> D{"Classifier"}
@@ -147,7 +147,7 @@ graph TD
 ### Core Architecture Pillars
 
 | Pillar | Description |
-|---|---|---|
+| --- | --- |
 | **Signed Execution Receipts** | Every `ExecutionResult` is HMAC-signed with stage flags + timestamp — non-repudiable proof that a response passed through the full compliance pipeline |
 | **Hash-Chained Audit Log** | SHA-256 append-only chain with `AuditLog.verify()` — detects any tampering retroactively. Every security event is recorded with an immutable link |
 | **Deterministic Replay** | `PromptClient.replay(id, model=X)` re-runs the same messages on a different model and diffs the output — catches **prompt drift** when upgrading models |
