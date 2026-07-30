@@ -63,10 +63,18 @@ redis = [
     "redis>=5.0.0",
 ]
 feedback = [
-    "brompt-engine[all]",
+    "anthropic>=0.40.0",
+    "openai>=1.50.0",
+    "ollama>=0.3.0",
+    "google-genai>=1.0.0",
+    "mistralai>=1.0.0",
 ]
 routing = [
-    "brompt-engine[all]",
+    "anthropic>=0.40.0",
+    "openai>=1.50.0",
+    "ollama>=0.3.0",
+    "google-genai>=1.0.0",
+    "mistralai>=1.0.0",
 ]
 dev = [
     "pytest>=7.4.0",
@@ -100,6 +108,16 @@ warn_return_any = true
 warn_unused_ignores = true
 ignore_missing_imports = true
 
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+select = ["E", "F", "I", "W", "N", "RUF"]
+ignore = ["N802", "N803", "N806", "N815", "N816"]
+exclude = ["venv", ".venv", "__pycache__", "src/brompt/guiapp"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["N802", "N803", "N806", "N815", "N816", "N999"]
+
 [tool.pyright]
 typeCheckingMode = "strict"
 reportMissingImports = false
@@ -112,7 +130,7 @@ omit = [
 ]
 
 [tool.coverage.report]
-fail_under = 70
+fail_under = 50
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,6 +1,6 @@
 metadata:
   name: DefaultAgent
-  version: 0.1.0-alpha
+  version: 2.0.0
   environment: production
 security_policy:
   isolation_level: ZERO_TRUST

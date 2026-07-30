@@ -33,7 +33,7 @@ except ImportError:
     _feedback_available = False
 
 __all__ = [
-    "BromptWidget", "PromptResult",
+    "PromptResult",
     "WidgetConfig", "ProviderConfig", "GenerationConfig",
     "CacheConfig", "FeedbackConfig", "SessionConfig",
     "ProviderType", "LogLevel",

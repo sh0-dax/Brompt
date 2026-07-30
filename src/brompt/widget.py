@@ -350,6 +350,7 @@ class PromptClient:
 
         if self._cache_enabled and self.config.cache.enabled:
             redis_url = self.config.cache.redis_url or os.getenv("BROMPT_REDIS_URL")
+            self._cache = None
             if redis_url:
                 try:
                     import redis as _redis_lib

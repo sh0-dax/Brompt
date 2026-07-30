@@ -52,7 +52,7 @@ def _now(_value: str, fmt: str = "%Y-%m-%d") -> str:
 
 
 _VAR_RE = re.compile(r"\{\{(\s*[\w.]+\s*(?:\|[^}]+)?)\s*\}\}")
-_BLOCK_RE = re.compile(r"\{%\s*(if|for|endif|endfor)\s*(.*?)\s*%\}")
+_BLOCK_RE = re.compile(r"\{%\s*(if|for|else|endif|endfor)\s*(.*?)\s*%\}")
 
 
 class TemplateError(Exception):
@@ -85,6 +85,7 @@ class Template:
         parts: list[str] = []
         condition_stack: list[bool] = []
         loop_stack: list[list[str]] = []
+        for_depth: int = 0
 
         def _eval_var(expr: str) -> str:
             parts_expr = expr.split("|")
@@ -113,21 +114,29 @@ class Template:
 
         for tok_type, tok_val in self._parsed:
             if tok_type == "text":
-                if not any(condition_stack) and not loop_stack:
+                if not condition_stack and not loop_stack and not for_depth:
                     parts.append(tok_val)
                 elif loop_stack:
                     loop_stack[-1].append(tok_val)
-                elif condition_stack and condition_stack[-1]:
+                elif condition_stack and condition_stack[-1] and not for_depth:
                     parts.append(tok_val)
             elif tok_type == "block":
+                if for_depth:
+                    if tok_val == "endfor":
+                        for_depth -= 1
+                    continue
                 if tok_val.startswith("if|"):
                     cond_expr = tok_val[3:]
                     result = self._eval_condition(cond_expr, kwargs)
                     condition_stack.append(result)
+                elif tok_val == "else":
+                    if condition_stack:
+                        condition_stack[-1] = not condition_stack[-1]
                 elif tok_val == "endif":
                     if condition_stack:
                         condition_stack.pop()
                 elif tok_val.startswith("for|"):
+                    for_depth += 1
                     loop_info = tok_val[4:]
                     parts.append(self._render_for(loop_info, kwargs))
                 elif tok_val == "endfor":
@@ -142,9 +151,21 @@ class Template:
         if len(tokens) == 1:
             return bool(vars.get(tokens[0]))
         if len(tokens) == 3:
-            left = str(vars.get(tokens[0], ""))
+            left_val = tokens[0]
+            if left_val.startswith("'") or left_val.startswith('"'):
+                left = left_val.strip("\"'")
+            elif left_val in vars:
+                left = str(vars[left_val])
+            else:
+                left = left_val
+            right_val = tokens[2]
+            if right_val.startswith("'") or right_val.startswith('"'):
+                right = right_val.strip("\"'")
+            elif right_val in vars:
+                right = str(vars[right_val])
+            else:
+                right = right_val
             op = tokens[1]
-            right = tokens[2].strip("\"'")
             if op == "==":
                 return left == right
             elif op == "!=":
