@@ -14,7 +14,6 @@ and the signature is independent of payload size.
 import hashlib
 import hmac
 import json
-import os
 import threading
 import time
 from pathlib import Path
@@ -67,7 +66,7 @@ class AuditLog:
     ) -> dict[str, Any]:
         """Appends one tamper-evident record. No update/delete by design.
 
-        *messages* – the exact message list sent to the LLM, stored so that
+        *messages* - the exact message list sent to the LLM, stored so that
         :meth:`replay` can re-run the same prompt on a different model.
         """
         with self._lock:

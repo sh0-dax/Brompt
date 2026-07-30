@@ -1,8 +1,9 @@
 """Tests for Template Engine."""
-import pytest
 from brompt.core.template_engine import (
-    Template, TemplateRegistry, TemplateError,
-    template_registry, create_builtin_templates,
+    Template,
+    TemplateRegistry,
+    create_builtin_templates,
+    template_registry,
 )
 
 

@@ -4,12 +4,12 @@ import pytest
 
 from brompt.providers_core import (
     AnthropicProvider,
-    OpenAIProvider,
-    OllamaProvider,
-    GeminiProvider,
-    MistralProvider,
     AzureOpenAIProvider,
+    GeminiProvider,
     LMStudioProvider,
+    MistralProvider,
+    OllamaProvider,
+    OpenAIProvider,
     ProviderError,
     build_provider_from_env,
 )

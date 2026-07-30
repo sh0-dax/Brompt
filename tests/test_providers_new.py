@@ -73,7 +73,7 @@ class TestRetryAsyncCall:
 
     @pytest.mark.asyncio
     async def test_exhausts_retries_and_raises(self):
-        from brompt.providers.base import retry_async_call, _MAX_RETRIES
+        from brompt.providers.base import _MAX_RETRIES, retry_async_call
 
         call_count = 0
 

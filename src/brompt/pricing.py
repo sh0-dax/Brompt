@@ -4,7 +4,6 @@ Rates are approximate public USD per 1M tokens (as of mid-2026).
 Update these as providers change their pricing.
 """
 
-from typing import Optional
 
 # ── per-model pricing (input / output / cached_input / cache_write) ──────────
 # Rates in USD per 1M tokens.  Zero means free / local.

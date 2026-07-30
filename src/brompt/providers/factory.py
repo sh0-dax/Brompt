@@ -1,13 +1,13 @@
 """Provider Factory + Registry Pattern."""
 
-from typing import Type, Optional
+from typing import ClassVar, Optional, Type
 
+from ..config import ProviderConfig, ProviderType
 from .base import LLMProvider
-from ..config import ProviderType
 
 
 class ProviderRegistry:
-    _providers: dict[str, Type[LLMProvider]] = {}
+    _providers: ClassVar[dict[str, Type[LLMProvider]]] = {}
 
     @classmethod
     def register(cls, name: str, provider_class: Type[LLMProvider]):
@@ -38,7 +38,7 @@ class ProviderRegistry:
 
 
 class ProviderFactory:
-    _type_mapping = {
+    _type_mapping: ClassVar[dict[ProviderType, str]] = {
         ProviderType.OPENAI: "openai",
         ProviderType.ANTHROPIC: "anthropic",
         ProviderType.GOOGLE: "google",
@@ -66,8 +66,7 @@ class ProviderFactory:
         return provider_class(model=model, api_key=api_key, **kwargs)
 
     @classmethod
-    def from_config(cls, config: "ProviderConfig") -> LLMProvider:
-        from ..config import ProviderConfig as PC
+    def from_config(cls, config: ProviderConfig) -> LLMProvider:
         return cls.create(
             provider_type=config.type,
             model=config.model,

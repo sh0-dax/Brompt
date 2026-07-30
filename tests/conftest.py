@@ -1,10 +1,11 @@
 """Shared pytest fixtures for feedback loop and API tests."""
 
-import pytest
 import tempfile
 from pathlib import Path
 
-from brompt.feedback import FeedbackLoop, PromptOutcome, PromptOptimizer
+import pytest
+
+from brompt.feedback import FeedbackLoop, PromptOptimizer, PromptOutcome
 
 
 @pytest.fixture

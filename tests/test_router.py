@@ -3,13 +3,9 @@
 import pytest
 
 from brompt.router import (
-    ModelRouter,
     ComplexityLevel,
+    ModelRouter,
     RoutingStrategy,
-    Route,
-    register_provider_profile,
-    ProviderProfile,
-    _PROVIDER_PROFILES,
 )
 
 
@@ -38,7 +34,8 @@ class TestComplexityClassification:
         assert ModelRouter.classify_complexity(q) == ComplexityLevel.MEDIUM
 
     def test_complex_code_large(self):
-        q = "Write a full CRUD API in Python with FastAPI, SQLAlchemy, and Pydantic:\n\n" + "def " + " ".join(["word"] * 35)
+        words = " ".join(["word"] * 35)
+        q = "Write a full CRUD API in Python with FastAPI, SQLAlchemy, and Pydantic:\n\n" + "def " + words
         assert ModelRouter.classify_complexity(q) == ComplexityLevel.COMPLEX
 
     def test_complex_math(self):

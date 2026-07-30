@@ -1,10 +1,9 @@
 """Template engine — variable interpolation, conditionals, filters, and a built-in template registry."""
 
-import re
 import json
-from typing import Any, Callable
+import re
 from datetime import datetime
-
+from typing import Any, Callable
 
 _FILTERS: dict[str, Callable] = {}
 

@@ -20,15 +20,15 @@ class FeedbackConfig(BaseModel):
     """Settings for the feedback loop system (analytics, regression, recommendations)."""
     storage_path: str = Field(default="data/feedback_store.json", description="Path to the JSON persistence file")
     regression_threshold: float = Field(default=0.15, description="Max allowed drop in success rate before alert")
-    min_uses_for_recommendation: int = Field(default=5, description="Minimum executions before a template is eligible for recommendations")
+    min_uses_for_recommendation: int = Field(default=5, description="Minimum executions before a template is eligible for recommendations")  # noqa: E501
     recent_window_size: int = Field(default=10, description="Number of recent executions used for regression checks")
     max_stored_executions: int = Field(default=1000, description="Max stored execution records before trimming")
     success_rate_weight: float = Field(default=0.5, description="Weight of success rate in template scoring (0-1)")
     rating_weight: float = Field(default=0.3, description="Weight of user rating in template scoring (0-1)")
     speed_weight: float = Field(default=0.2, description="Weight of latency in template scoring (0-1)")
-    high_latency_threshold_ms: float = Field(default=5000.0, description="Latency above this triggers improvement suggestions")
-    low_success_threshold: float = Field(default=70.0, description="Success rate below this triggers improvement suggestions")
-    low_rating_threshold: float = Field(default=3.5, description="Average rating below this triggers improvement suggestions")
+    high_latency_threshold_ms: float = Field(default=5000.0, description="Latency above this triggers improvement suggestions")  # noqa: E501
+    low_success_threshold: float = Field(default=70.0, description="Success rate below this triggers improvement suggestions")  # noqa: E501
+    low_rating_threshold: float = Field(default=3.5, description="Average rating below this triggers improvement suggestions")  # noqa: E501
 
 
 class APIConfig(BaseModel):

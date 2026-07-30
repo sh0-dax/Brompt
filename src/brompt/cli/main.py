@@ -1,22 +1,20 @@
 """Brompt CLI — Typer-based command-line interface with Rich formatting."""
 
-import sys
 import json
-import asyncio
 from pathlib import Path
 from typing import Optional
 
 import typer
 from rich.console import Console
-from rich.table import Table
 from rich.panel import Panel
-from rich.syntax import Syntax
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.syntax import Syntax
+from rich.table import Table
 
 from brompt.core.engine import BromptEngine
-from brompt.hooks import hooks_manager, LoggingHook, TimingHook
-from brompt.observability import metrics
 from brompt.core.template_engine import template_registry
+from brompt.hooks import LoggingHook, TimingHook, hooks_manager
+from brompt.observability import metrics
 
 app = typer.Typer(
     name="brompt",
@@ -51,7 +49,9 @@ def chat(
     hooks_manager.register(LoggingHook())
     hooks_manager.register(TimingHook())
 
-    console.print(Panel("[bold cyan]Brompt Chat Session[/bold cyan]\nType [bold]/help[/bold] for commands, [bold]/exit[/bold] to quit."))
+    help_text = "[bold cyan]Brompt Chat Session[/bold cyan]\n"
+    help_text += "Type [bold]/help[/bold] for commands, [bold]/exit[/bold] to quit."
+    console.print(Panel(help_text))
 
     while True:
         try:

@@ -1,12 +1,12 @@
 """Observability — tracing spans, metrics collection, and alert management."""
 
-import time
-import uuid
 import logging
 import threading
+import time
+import uuid
 from collections import defaultdict
-from typing import Any, Callable
 from dataclasses import dataclass, field
+from typing import Any, Callable
 
 logger = logging.getLogger("brompt.observability")
 
@@ -57,7 +57,7 @@ class Tracer:
     def __init__(self):
         self._spans: list[Span] = []
 
-    def start_span(self, name: str, trace_id: str | None = None, parent_span_id: str | None = None, attributes: dict | None = None) -> Span:
+    def start_span(self, name: str, trace_id: str | None = None, parent_span_id: str | None = None, attributes: dict | None = None) -> Span:  # noqa: E501
         span = Span(
             name=name,
             trace_id=trace_id or uuid.uuid4().hex,

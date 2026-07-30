@@ -2,7 +2,7 @@
 
 import pytest
 
-from brompt.feedback import FeedbackLoop, PromptOutcome, PromptExecution, TemplateStats, PromptOptimizer
+from brompt.feedback import FeedbackLoop, PromptExecution, PromptOutcome, TemplateStats
 
 
 class TestPromptOutcome:

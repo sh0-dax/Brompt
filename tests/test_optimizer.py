@@ -1,5 +1,4 @@
 """Tests for TokenOptimizer."""
-import pytest
 from brompt.optimizer import TokenOptimizer
 
 
@@ -79,7 +78,7 @@ class TestBuildOptimizedPrompt:
             user_input="Hello!",
             template_content="",
         )
-        prompt, stats = result
+        prompt, _stats = result
         assert "You are helpful" in prompt or prompt == "" or "Hello" in prompt
 
     def test_build_api_messages(self):
@@ -88,5 +87,5 @@ class TestBuildOptimizedPrompt:
             user_input="Hello!",
             template_content="",
         )
-        messages, stats = result
+        messages, _stats = result
         assert len(messages) >= 1

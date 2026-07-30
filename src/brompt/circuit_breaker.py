@@ -53,7 +53,8 @@ class CircuitBreaker:
         probe limit reached, or None if the call may proceed.
         """
         if self.state == CircuitState.OPEN:
-            if self.last_failure_time is not None and (time.monotonic() - self.last_failure_time) >= self.recovery_timeout:
+            elapsed = time.monotonic() - self.last_failure_time if self.last_failure_time else 0
+            if self.last_failure_time is not None and elapsed >= self.recovery_timeout:
                 self.state = CircuitState.HALF_OPEN
                 self.half_open_calls = 0
                 logger.info("Circuit breaker OPEN -> HALF_OPEN (recovery probe)")
@@ -144,6 +145,11 @@ class CircuitBreaker:
     def is_open(self) -> bool:
         return self.state == CircuitState.OPEN
 
+    def _fmt_last_failure(self) -> str:
+        if self.last_failure_time is None:
+            return "N/A"
+        return f"{time.monotonic() - self.last_failure_time:.1f}s ago"
+
     def reset(self):
         self.state = CircuitState.CLOSED
         self.failure_count = 0
@@ -154,5 +160,5 @@ class CircuitBreaker:
         return (
             f"CircuitBreaker(state={self.state.name}, "
             f"failures={self.failure_count}/{self.failure_threshold}, "
-            f"last_failure={'{:.1f}s ago'.format(time.monotonic() - self.last_failure_time) if self.last_failure_time else 'N/A'})"
+            f"last_failure={self._fmt_last_failure()})"
         )

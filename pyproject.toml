@@ -111,12 +111,14 @@ ignore_missing_imports = true
 [tool.ruff]
 target-version = "py310"
 line-length = 120
-select = ["E", "F", "I", "W", "N", "RUF"]
-ignore = ["N802", "N803", "N806", "N815", "N816"]
 exclude = ["venv", ".venv", "__pycache__", "src/brompt/guiapp"]
 
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "N", "RUF"]
+ignore = ["N802", "N803", "N806", "N815", "N816"]
+
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["N802", "N803", "N806", "N815", "N816", "N999"]
+"tests/*" = ["N802", "N803", "N806", "N815", "N816", "N999", "RUF001"]
 
 [tool.pyright]
 typeCheckingMode = "strict"

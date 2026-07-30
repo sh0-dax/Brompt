@@ -1,9 +1,9 @@
 """Ollama provider — local LLM inference via Ollama, async support."""
 
 import time
-from typing import Optional, AsyncIterator
+from typing import AsyncIterator
 
-from .base import LLMProvider, ProviderResult, ProviderOutcome
+from .base import LLMProvider, ProviderOutcome, ProviderResult
 
 
 class OllamaProvider(LLMProvider):

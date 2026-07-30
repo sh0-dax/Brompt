@@ -13,7 +13,7 @@ class SecurityViolationError(ValueError):
     """Custom exception raised when a security inspection fails."""
 
 
-_ZERO_WIDTH_CHARS = str.maketrans({c: None for c in "\u200b\u200c\u200d\u2060\ufeff\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u2028\u2029\u2061\u2062\u2063\u2064\u2066\u2067\u2068\u2069"})
+_ZERO_WIDTH_CHARS = str.maketrans({c: None for c in "\u200b\u200c\u200d\u2060\ufeff\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u2028\u2029\u2061\u2062\u2063\u2064\u2066\u2067\u2068\u2069"})  # noqa: E501
 
 
 class SecurityEngine:
@@ -24,11 +24,11 @@ class SecurityEngine:
         (r"\breveal\s+(your\s+)?(system\s+)?prompt\b", "System Leakage Attempt"),
         (r"\breveal\s+internal\s+keys\b", "Credential Leakage Attempt"),
         (r"you\s+are\s+now\s+in\s+(developer|dan|god)\s+mode", "Jailbreak: Persona Switch"),
-        (r"\bdisregard\s+(all\s+|any\s+)?(prior|previous)\s+(instructions|directives|guidelines)\b", "Direct Injection: Instruction Override (variant)"),
-        (r"\boverride\s+(your\s+)?(core|safety|security|ethical)\s+(protocols?|guidelines?|instructions)\b", "Direct Injection: Safety Override"),
-        (r"\boutput\s+(your\s+)?(system\s+)?(prompt|instructions)\s+(verbatim|text|as.is|exactly)\b", "System Leakage Attempt (variant)"),
+        (r"\bdisregard\s+(all\s+|any\s+)?(prior|previous)\s+(instructions|directives|guidelines)\b", "Direct Injection: Instruction Override (variant)"),  # noqa: E501
+        (r"\boverride\s+(your\s+)?(core|safety|security|ethical)\s+(protocols?|guidelines?|instructions)\b", "Direct Injection: Safety Override"),  # noqa: E501
+        (r"\boutput\s+(your\s+)?(system\s+)?(prompt|instructions)\s+(verbatim|text|as.is|exactly)\b", "System Leakage Attempt (variant)"),  # noqa: E501
         (r"\byou\s+(are|will)\s+now\s+(act\s+as|simulate|pretend\s+to\s+be)\b", "Jailbreak: Role-Play Bypass"),
-        (r"\bremove\s+(all\s+)?(restrictions?|limitations?|filtering|content.policy)\b", "Jailbreak: Restriction Removal"),
+        (r"\bremove\s+(all\s+)?(restrictions?|limitations?|filtering|content.policy)\b", "Jailbreak: Restriction Removal"),  # noqa: E501
         (r"تجاهل\s+(جميع\s+)?التعليمات\s+السابقة", "Arabic: Instruction Override Attempt"),
         (r"أنت\s+(الآن\s+)?في\s+وضع\s+المطور", "Arabic: Developer Mode Bypass"),
         (r"ignora\s+(tutte\s+)?le\s+istruzioni\s+precedenti", "Italian: Instruction Override Attempt"),
@@ -63,10 +63,14 @@ class SecurityEngine:
         for c in cleaned:
             if c.isalnum() or c in "+/=":
                 base64_chars += 1
-            if c.isupper(): has_upper = True
-            if c.islower(): has_lower = True
-            if c.isdigit(): has_digit = True
-            if c in "+/=": has_symbol = True
+            if c.isupper():
+                has_upper = True
+            if c.islower():
+                has_lower = True
+            if c.isdigit():
+                has_digit = True
+            if c in "+/=":
+                has_symbol = True
         char_class_count = sum([has_upper, has_lower, has_digit, has_symbol])
         if char_class_count < 2:
             return False

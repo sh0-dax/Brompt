@@ -1,6 +1,7 @@
 """Tests for PromptClient widget."""
 import pytest
-from brompt.widget import PromptResult, LRUCache
+
+from brompt.widget import LRUCache, PromptResult
 
 
 def make_result(text="test", tokens=5):

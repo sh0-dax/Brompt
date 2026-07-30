@@ -2,8 +2,6 @@
 
 import json
 
-import pytest
-
 from brompt.audit import AuditLog
 
 

@@ -1,7 +1,5 @@
 """Tests for Session and SessionManager."""
-import time
-import pytest
-from brompt.session import Session, SessionManager, Message
+from brompt.session import Message, Session, SessionManager
 
 
 class TestMessage:
@@ -166,8 +164,8 @@ class TestSessionManager:
 
     def test_max_sessions_eviction(self):
         mgr = SessionManager(max_sessions=3)
-        s1 = mgr.create_session()
-        s2 = mgr.create_session()
-        s3 = mgr.create_session()
-        s4 = mgr.create_session()
+        mgr.create_session()
+        mgr.create_session()
+        mgr.create_session()
+        mgr.create_session()
         assert mgr.get_total_sessions() <= 3

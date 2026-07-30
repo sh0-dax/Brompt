@@ -5,7 +5,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
 from threading import Lock
-from typing import Optional, Iterator
+from typing import Iterator, Optional
 
 
 @dataclass

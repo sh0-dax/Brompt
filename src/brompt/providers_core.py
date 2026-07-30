@@ -294,7 +294,7 @@ class OllamaProvider(LLMProvider):
         try:
             kwargs: dict = {"model": self.model, "messages": messages}
             if system:
-                kwargs["messages"] = [{"role": "system", "content": system}] + messages
+                kwargs["messages"] = [{"role": "system", "content": system}, *messages]
             response = self._client.chat(**kwargs)
         except Exception as exc:
             raise ProviderError(f"Ollama API call failed: {exc}") from exc

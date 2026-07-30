@@ -3,28 +3,52 @@
 __version__ = "2.0.0"
 __author__ = "Brompt Team"
 
-from .widget import PromptClient, PromptResult
-from .config import (
-    WidgetConfig, ProviderConfig, GenerationConfig, CacheConfig,
-    FeedbackConfig, SessionConfig, ProviderType, LogLevel,
-    create_dev_config, create_production_config,
-)
-from .providers import (
-    LLMProvider, ProviderResult, ProviderFactory, ProviderRegistry,
-    OpenAIProvider, AnthropicProvider, GoogleProvider, MistralProvider, OllamaProvider,
-)
-from .session import Session, SessionManager, Message
-from .core.template_engine import Template, TemplateRegistry, template_registry
-from .hooks import HooksManager, hooks_manager, BaseHook, LoggingHook, TimingHook, ValidationHook, AuditHook, RateLimitHook, SecurityHook
-from .observability import Tracer, tracer, MetricsCollector, metrics, AlertManager, alert_manager, AlertRule, Span
-from .core.engine import BromptEngine
-from .circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
-from .router import ModelRouter, RoutingStrategy, ComplexityLevel
-from .ratelimit import RateLimiter, RateLimiterBackend, RedisRateLimiter, RateLimitExceededError
 from .audit import AuditLog
-from .security import SecurityEngine, SecurityViolationError
-from .classifier import LLMInjectionClassifier, Tier, PendingReviewError, ClassificationResult, InjectionClassifier
+from .circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
+from .classifier import ClassificationResult, InjectionClassifier, LLMInjectionClassifier, PendingReviewError, Tier
+from .config import (
+    CacheConfig,
+    FeedbackConfig,
+    GenerationConfig,
+    LogLevel,
+    ProviderConfig,
+    ProviderType,
+    SessionConfig,
+    WidgetConfig,
+    create_dev_config,
+    create_production_config,
+)
+from .core.engine import BromptEngine
+from .core.template_engine import Template, TemplateRegistry, template_registry
+from .hooks import (
+    AuditHook,
+    BaseHook,
+    HooksManager,
+    LoggingHook,
+    RateLimitHook,
+    SecurityHook,
+    TimingHook,
+    ValidationHook,
+    hooks_manager,
+)
+from .observability import AlertManager, AlertRule, MetricsCollector, Span, Tracer, alert_manager, metrics, tracer
 from .policy import PolicyEngine, PolicyRule, PolicyViolationError
+from .providers import (
+    AnthropicProvider,
+    GoogleProvider,
+    LLMProvider,
+    MistralProvider,
+    OllamaProvider,
+    OpenAIProvider,
+    ProviderFactory,
+    ProviderRegistry,
+    ProviderResult,
+)
+from .ratelimit import RateLimiter, RateLimiterBackend, RateLimitExceededError, RedisRateLimiter
+from .router import ComplexityLevel, ModelRouter, RoutingStrategy
+from .security import SecurityEngine, SecurityViolationError
+from .session import Message, Session, SessionManager
+from .widget import PromptClient, PromptResult
 
 try:
     from .feedback import FeedbackLoop, PromptOutcome
@@ -33,26 +57,71 @@ except ImportError:
     _feedback_available = False
 
 __all__ = [
-    "PromptResult",
-    "WidgetConfig", "ProviderConfig", "GenerationConfig",
-    "CacheConfig", "FeedbackConfig", "SessionConfig",
-    "ProviderType", "LogLevel",
-    "create_dev_config", "create_production_config",
-    "LLMProvider", "ProviderResult", "ProviderFactory", "ProviderRegistry",
-    "OpenAIProvider", "AnthropicProvider", "GoogleProvider", "MistralProvider", "OllamaProvider",
-    "Session", "SessionManager", "Message",
-    "Template", "TemplateRegistry", "template_registry",
-    "HooksManager", "hooks_manager", "BaseHook",
-    "LoggingHook", "TimingHook", "ValidationHook", "AuditHook", "RateLimitHook", "SecurityHook",
-    "Tracer", "tracer", "MetricsCollector", "metrics", "AlertManager", "alert_manager", "AlertRule", "Span",
-    "BromptEngine",
-    "CircuitBreaker", "CircuitBreakerOpenError",
-    "ModelRouter", "RoutingStrategy", "ComplexityLevel",
-    "RateLimiter", "RateLimiterBackend", "RedisRateLimiter", "RateLimitExceededError",
+    "AlertManager",
+    "AlertRule",
+    "AnthropicProvider",
+    "AuditHook",
     "AuditLog",
-    "SecurityEngine", "SecurityViolationError",
-    "LLMInjectionClassifier", "Tier", "PendingReviewError", "ClassificationResult", "InjectionClassifier",
-    "PolicyEngine", "PolicyRule", "PolicyViolationError",
+    "BaseHook",
+    "BromptEngine",
+    "CacheConfig",
+    "CircuitBreaker",
+    "CircuitBreakerOpenError",
+    "ClassificationResult",
+    "ComplexityLevel",
+    "FeedbackConfig",
+    "GenerationConfig",
+    "GoogleProvider",
+    "HooksManager",
+    "InjectionClassifier",
+    "LLMInjectionClassifier",
+    "LLMProvider",
+    "LogLevel",
+    "LoggingHook",
+    "Message",
+    "MetricsCollector",
+    "MistralProvider",
+    "ModelRouter",
+    "OllamaProvider",
+    "OpenAIProvider",
+    "PendingReviewError",
+    "PolicyEngine",
+    "PolicyRule",
+    "PolicyViolationError",
+    "PromptClient",
+    "PromptResult",
+    "ProviderConfig",
+    "ProviderFactory",
+    "ProviderRegistry",
+    "ProviderResult",
+    "ProviderType",
+    "RateLimitExceededError",
+    "RateLimitHook",
+    "RateLimiter",
+    "RateLimiterBackend",
+    "RedisRateLimiter",
+    "RoutingStrategy",
+    "SecurityEngine",
+    "SecurityHook",
+    "SecurityViolationError",
+    "Session",
+    "SessionConfig",
+    "SessionManager",
+    "Span",
+    "Template",
+    "TemplateRegistry",
+    "Tier",
+    "TimingHook",
+    "Tracer",
+    "ValidationHook",
+    "WidgetConfig",
+    "alert_manager",
+    "create_dev_config",
+    "create_production_config",
+    "hooks_manager",
+    "metrics",
+    "template_registry",
+    "tracer",
 ]
 
 if _feedback_available:

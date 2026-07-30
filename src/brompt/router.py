@@ -7,12 +7,10 @@ query complexity via heuristics (no ML model required).
 
 import logging
 import re
-import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from .pricing import estimate_cost
 from .providers.base import LLMProvider
 
 logger = logging.getLogger("brompt.router")
@@ -151,7 +149,7 @@ class ModelRouter:
 
         if word_count > 200 or has_math or (has_code and word_count > 30):
             return ComplexityLevel.COMPLEX
-        if word_count > 60 or has_code or has_multi_paragraph or has_analytical_keywords or has_multi_step or has_long_words:
+        if word_count > 60 or has_code or has_multi_paragraph or has_analytical_keywords or has_multi_step or has_long_words:  # noqa: E501
             return ComplexityLevel.MEDIUM
         return ComplexityLevel.SIMPLE
 

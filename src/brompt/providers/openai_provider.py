@@ -1,9 +1,9 @@
 """OpenAI Provider."""
 
 import time
-from typing import Optional, AsyncIterator
+from typing import AsyncIterator
 
-from .base import LLMProvider, ProviderResult, ProviderOutcome, retry_async_call
+from .base import LLMProvider, ProviderOutcome, ProviderResult, retry_async_call
 
 
 class OpenAIProvider(LLMProvider):

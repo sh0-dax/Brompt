@@ -12,7 +12,7 @@ class TokenOptimizer:
     @staticmethod
     def _is_code_or_config(content: str) -> bool:
         code_indicators = ("```", "def ", "class ", "import ", "function", "const ", "var ", "SELECT ", "{" )
-        return any(content.strip().startswith(ind) or content.strip().startswith(ind.lower()) for ind in code_indicators)
+        return any(content.strip().startswith(ind) or content.strip().startswith(ind.lower()) for ind in code_indicators)  # noqa: E501
 
     @classmethod
     def compress_context(cls, messages: list, max_messages: int = 4) -> list:

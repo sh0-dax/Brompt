@@ -31,7 +31,7 @@ class BromptEngine:
     def __init__(
         self,
         config_path: str = "agent.brompt.yaml",
-        provider: LLMProvider | None | object = _UNSET,
+        provider: LLMProvider | object | None = _UNSET,
         async_provider: LLMProvider | None = None,
         audit_log_path: str | None = None,
         audit_secret_key: str | None = None,

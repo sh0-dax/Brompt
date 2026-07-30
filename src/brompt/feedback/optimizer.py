@@ -2,15 +2,15 @@
 
 import re
 from collections import Counter
-from typing import Optional
+from typing import ClassVar, Optional
 
-from .models import PromptOutcome, TemplateStats
+from .models import TemplateStats
 
 
 class PromptOptimizer:
     """Analyses underperforming templates and generates actionable suggestions."""
 
-    COMMON_ISSUES = {
+    COMMON_ISSUES: ClassVar[dict[str, list[str]]] = {
         "vague_instructions": [
             r"try to", r"maybe", r"perhaps", r"if possible",
             r"حاول", r"يمكنك", r"ربما", r"إذا أمكن",

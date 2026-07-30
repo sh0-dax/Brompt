@@ -8,7 +8,7 @@ import pytest
 
 fakeredis = pytest.importorskip("fakeredis")
 
-from brompt.ratelimit import RateLimitExceededError, RedisRateLimiter
+from brompt.ratelimit import RateLimitExceededError, RedisRateLimiter  # noqa: E402
 
 
 class TestRedisRateLimiter:

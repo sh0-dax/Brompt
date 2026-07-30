@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Optional
 
 
 class PromptOutcome(Enum):
@@ -129,7 +129,7 @@ class TemplateStats:
             "pure_success_rate": f"{self.pure_success_rate:.1f}%",
             "avg_rating": f"{self.avg_rating:.1f}/5",
             "avg_latency": f"{self.avg_latency:.0f}ms",
-            "hallucination_rate": f"{(self.hallucination_count / self.total_uses * 100):.1f}%" if self.total_uses > 0 else "0%",
+            "hallucination_rate": f"{(self.hallucination_count / self.total_uses * 100):.1f}%" if self.total_uses > 0 else "0%",  # noqa: E501
             "last_used": self.last_used.isoformat() if self.last_used else None,
             "first_used": self.first_used.isoformat() if self.first_used else None,
         }

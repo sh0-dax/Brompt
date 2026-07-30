@@ -14,7 +14,7 @@ class BaseHook(abc.ABC):
     """Abstract base for all hooks."""
 
     @abc.abstractmethod
-    def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:
+    def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:  # noqa: E501
         return user_query, context
 
     @abc.abstractmethod
@@ -40,7 +40,7 @@ class HooksManager:
     def list_hooks(self) -> list[str]:
         return [type(h).__name__ for h in self._hooks]
 
-    def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:
+    def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:  # noqa: E501
         for hook in self._hooks:
             user_query, context = hook.before_execute(user_query, context, **kwargs)
         return user_query, context
@@ -59,7 +59,7 @@ class LoggingHook(BaseHook):
     def __init__(self, level: str = "info"):
         self._level = getattr(logger, level.lower(), logger.info)
 
-    def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:
+    def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:  # noqa: E501
         self._level("Executing query: %s", user_query[:200])
         return user_query, context
 
@@ -72,7 +72,7 @@ class LoggingHook(BaseHook):
 class TimingHook(BaseHook):
     """Measures and records execution time of each query."""
 
-    def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:
+    def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:  # noqa: E501
         self._start = time.perf_counter()
         return user_query, context
 
@@ -89,7 +89,7 @@ class ValidationHook(BaseHook):
         self.max_input_length = max_input_length
         self.max_output_length = max_output_length
 
-    def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:
+    def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:  # noqa: E501
         if len(user_query) > self.max_input_length:
             raise ValueError(f"Input exceeds max length of {self.max_input_length}")
         return user_query, context
@@ -105,7 +105,7 @@ class ValidationHook(BaseHook):
 class AuditHook(BaseHook):
     """Forces audit logging through the audit subsystem."""
 
-    def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:
+    def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:  # noqa: E501
         return user_query, context
 
     def after_execute(self, result: ExecutionResult, **kwargs) -> ExecutionResult:
@@ -122,7 +122,7 @@ class RateLimitHook(BaseHook):
         self.window_seconds = window_seconds
         self._timestamps: list[float] = []
 
-    def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:
+    def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:  # noqa: E501
         now = time.time()
         self._timestamps = [t for t in self._timestamps if now - t <= self.window_seconds]
         if len(self._timestamps) >= self.max_calls:
@@ -144,7 +144,7 @@ class SecurityHook(BaseHook):
             "system prompt:",
         ]
 
-    def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:
+    def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:  # noqa: E501
         query_lower = user_query.lower()
         for pattern in self._blocked_patterns:
             if pattern in query_lower:

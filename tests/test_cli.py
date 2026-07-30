@@ -1,9 +1,8 @@
 """Tests for the Typer-based CLI."""
-import json
-import yaml
 import pytest
-from pathlib import Path
+import yaml
 from typer.testing import CliRunner
+
 from brompt.cli.main import app
 
 runner = CliRunner()

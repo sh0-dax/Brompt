@@ -3,7 +3,7 @@
 import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, Literal
+from typing import Literal, Optional
 
 
 class ProviderType(str, Enum):
@@ -56,7 +56,7 @@ class GenerationConfig:
         if not 0 <= self.top_p <= 1:
             raise ValueError(f"top_p must be 0-1, got {self.top_p}")
         if self.max_tokens < 1:
-            raise ValueError(f"max_tokens must be > 0")
+            raise ValueError("max_tokens must be > 0")
 
 
 @dataclass

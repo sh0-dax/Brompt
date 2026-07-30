@@ -2,7 +2,7 @@
 
 import pytest
 
-from brompt.widget import RedisCache, PromptResult, LRUCache
+from brompt.widget import LRUCache, PromptResult, RedisCache
 
 
 @pytest.fixture
@@ -88,7 +88,6 @@ class TestRedisCache:
         assert cache.get("x", "t", "gpt-4", None) is None
 
     def test_ttl_expiry(self, fakeredis_client):
-        import fakeredis
         cache = RedisCache(fakeredis_client, default_ttl=1)
         result = PromptResult(
             user_input="temp",

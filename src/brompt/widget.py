@@ -8,15 +8,15 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from threading import Lock
-from typing import Optional, AsyncIterator
+from typing import AsyncIterator, Optional
 
 from .audit import AuditLog
-from .config import WidgetConfig, ProviderConfig, GenerationConfig, ProviderType, RoutingConfig
-from .providers import ProviderFactory, LLMProvider, ProviderResult
-from .router import ModelRouter, RoutingStrategy
-from .session import Session, SessionManager, Message
-from .pricing import estimate_cost
+from .config import ProviderConfig, WidgetConfig
 from .optimizer import TokenOptimizer
+from .pricing import estimate_cost
+from .providers import LLMProvider, ProviderFactory
+from .router import ModelRouter
+from .session import Session, SessionManager
 
 try:
     from .feedback import FeedbackLoop, PromptOutcome
@@ -596,16 +596,17 @@ class PromptClient:
         if not self._feedback:
             logger.warning("Feedback system not enabled")
             return
-        from .feedback import PromptOutcome as PO
+        from .feedback import PromptOutcome
         outcome_map = {
-            "success": PO.SUCCESS, "partial": PO.PARTIAL,
-            "hallucination": PO.HALLUCINATION, "irrelevant": PO.IRRELEVANT, "error": PO.ERROR,
+            "success": PromptOutcome.SUCCESS, "partial": PromptOutcome.PARTIAL,
+            "hallucination": PromptOutcome.HALLUCINATION,
+            "irrelevant": PromptOutcome.IRRELEVANT, "error": PromptOutcome.ERROR,
         }
         self._feedback.record_execution(
             template_id=result.template_id,
             generated_prompt=result.generated_prompt,
             model_response=result.response,
-            outcome=outcome_map.get(outcome, PO.SUCCESS),
+            outcome=outcome_map.get(outcome, PromptOutcome.SUCCESS),
             latency_ms=result.latency_ms, tokens_used=result.tokens_used,
             user_feedback=rating, model_name=result.model,
         )
@@ -745,7 +746,6 @@ class PromptClient:
         return builtin_templates.get(template_id, builtin_templates["default"])
 
     def __repr__(self) -> str:
-        cache_hit = self._cache.hit_rate if hasattr(self._cache, 'hit_rate') and self._cache else 0
         return (
             f"PromptClient(model='{self.config.provider.model}', "
             f"sessions={self._sessions.get_total_sessions()}, "

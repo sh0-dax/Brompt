@@ -5,7 +5,6 @@ import pytest
 from brompt.classifier import (
     InjectionClassificationError,
     LLMInjectionClassifier,
-    PendingReviewError,
     Tier,
 )
 from brompt.providers_core import ProviderError

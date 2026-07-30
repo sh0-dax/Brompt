@@ -12,7 +12,6 @@ import pytest
 
 from brompt.guiapp import _resolve_config_path
 
-
 # ---------------------------------------------------------------------------
 # Pure-logic tests (no display needed)
 # ---------------------------------------------------------------------------

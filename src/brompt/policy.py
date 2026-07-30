@@ -26,7 +26,7 @@ logger = logging.getLogger("brompt.policy")
 class PolicyRule:
     """A single allow/deny rule from the manifest."""
 
-    __slots__ = ("caller_id", "action", "reason")
+    __slots__ = ("action", "caller_id", "reason")
 
     def __init__(self, caller_id: str, action: str, reason: str = ""):
         self.caller_id = caller_id
