@@ -17,6 +17,14 @@ from .session import Session, SessionManager, Message
 from .core.template_engine import Template, TemplateRegistry, template_registry
 from .hooks import HooksManager, hooks_manager, BaseHook, LoggingHook, TimingHook, ValidationHook, AuditHook, RateLimitHook, SecurityHook
 from .observability import Tracer, tracer, MetricsCollector, metrics, AlertManager, alert_manager, AlertRule, Span
+from .core.engine import BromptEngine
+from .circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
+from .router import ModelRouter, RoutingStrategy, ComplexityLevel
+from .ratelimit import RateLimiter, RateLimiterBackend, RedisRateLimiter, RateLimitExceededError
+from .audit import AuditLog
+from .security import SecurityEngine, SecurityViolationError
+from .classifier import LLMInjectionClassifier, Tier, PendingReviewError, ClassificationResult, InjectionClassifier
+from .policy import PolicyEngine, PolicyRule, PolicyViolationError
 
 try:
     from .feedback import FeedbackLoop, PromptOutcome
@@ -37,6 +45,14 @@ __all__ = [
     "HooksManager", "hooks_manager", "BaseHook",
     "LoggingHook", "TimingHook", "ValidationHook", "AuditHook", "RateLimitHook", "SecurityHook",
     "Tracer", "tracer", "MetricsCollector", "metrics", "AlertManager", "alert_manager", "AlertRule", "Span",
+    "BromptEngine",
+    "CircuitBreaker", "CircuitBreakerOpenError",
+    "ModelRouter", "RoutingStrategy", "ComplexityLevel",
+    "RateLimiter", "RateLimiterBackend", "RedisRateLimiter", "RateLimitExceededError",
+    "AuditLog",
+    "SecurityEngine", "SecurityViolationError",
+    "LLMInjectionClassifier", "Tier", "PendingReviewError", "ClassificationResult", "InjectionClassifier",
+    "PolicyEngine", "PolicyRule", "PolicyViolationError",
 ]
 
 if _feedback_available:

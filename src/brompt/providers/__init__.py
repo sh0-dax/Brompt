@@ -7,6 +7,7 @@ from .anthropic_provider import AnthropicProvider
 from .google_provider import GoogleProvider
 from .mistral_provider import MistralProvider
 from .ollama_provider import OllamaProvider
+from ..providers_core import AzureOpenAIProvider, AsyncAzureOpenAIProvider, LMStudioProvider
 
 ProviderRegistry.register("openai", OpenAIProvider)
 ProviderRegistry.register("anthropic", AnthropicProvider)
@@ -24,4 +25,7 @@ __all__ = [
     "GoogleProvider",
     "MistralProvider",
     "OllamaProvider",
+    "AzureOpenAIProvider",
+    "AsyncAzureOpenAIProvider",
+    "LMStudioProvider",
 ]

@@ -317,8 +317,7 @@ Brompt/
 │       │   ├── anthropic_provider.py # Anthropic / Claude
 │       │   ├── google_provider.py    # Google Gemini
 │       │   ├── mistral_provider.py   # Mistral AI
-│       │   ├── ollama_provider.py    # Ollama (local)
-│       │   └── azure_provider.py     # Azure OpenAI
+│       │   └── ollama_provider.py    # Ollama (local)
 │       ├── cli/
 │       │   ├── __init__.py           # CLI package
 │       │   └── main.py               # Typer-based CLI (8 commands)
@@ -343,6 +342,11 @@ Brompt/
 │   ├── test_api.py                  # API endpoint tests
 │   └── ...                          # Feedback, retry, classifier, etc.
 ├── agent.brompt.yaml                # Declarative Runtime Manifest
+├── app.py                           # FastAPI application entry point
+├── auto_detect.py                   # Auto-detection for task type / provider
+├── modern_ui.py                     # Modern web-based user interface
+├── templates.py                     # Additional prompt templates
+├── brompt.ps1                       # PowerShell helper script
 ├── pyproject.toml                   # Package Configuration & Dependencies
 └── README.md                        # Technical Specification
 ```
