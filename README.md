@@ -45,6 +45,7 @@
 
 <p align="center"><strong>Table of Contents</strong></p>
 <p align="center">
+  <a href="#why-brompt">Why Brompt?</a> ·
   <a href="#1-system-architecture-overview">Architecture</a> ·
   <a href="#2-security-architecture">Security</a> ·
   <a href="#3-core-features">Features</a> ·
@@ -61,9 +62,57 @@
 
 ---
 
+## Why Brompt?
+
+**Brompt is compliance-grade LLM middleware — not another provider abstraction layer.**
+
+LangChain and LiteLLM compete on breadth (100+ providers, large communities). Brompt doesn't. Brompt competes on trust: **signed execution receipts, hash-chained audit trails, and policy-as-code governance for regulated industries** (legal, financial, government).
+
+They route. Brompt proves.
+
+| Why NOT LangChain / LiteLLM | Brompt's answer |
+|---|---|
+| No non-repudiation — responses can't be verified after the fact | **Signed execution receipts** (HMAC/hash-chain per `ExecutionResult`) — every response is provably authentic and tamper-evident |
+| Audit is an afterthought (text logs) | **Hash-chained audit log** — `AuditLog.verify()` replays the chain and detects any tampering |
+| No deterministic replay — changing models changes behavior silently | `PromptClient.replay(id, model=X)` — re-runs the same prompt on a different model and diffs the result to detect **prompt drift** |
+| Security filters are either absent or opaque | **Defense-in-depth**: regex blocklist + LLM semantic classifier + output redaction, all recorded in the audit chain |
+| Policy is hardcoded or non-existent | **Policy-as-code**: per-tenant YAML policies (allow/deny per `caller_id`) evaluated before the prompt reaches any provider |
+| No human-in-the-loop for gray zones | **Configurable confidence thresholds** — below 0.4 = pass, 0.4-0.7 = hold for human review, above 0.7 = block |
+| Vendor lock-in — switching models means rewriting prompts | **Provider-agnostic pipeline** — drop-in swap between 7 providers; signed receipts prove what was submitted regardless of model |
+
+### How Brompt works
+
+Brompt sits **above** the provider layer. You can even use LiteLLM as a provider underneath Brompt — the compliance layer stays the same.
+
+```text
+Client App
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│          BROMPT COMPLIANCE LAYER         │
+│  ├ Rate Limiter     ├ Security Engine    │
+│  ├ Policy-as-Code   ├ Classifier (LLM)   │
+│  ├ Circuit Breaker  ├ Model Router       │
+│  ├ Token Optimizer  ├ Memory Manager     │
+│  └ Audit Log (hash-chained, signed)      │
+└─────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│     PROVIDER (Anthropic / OpenAI / …)    │
+└─────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│    Execution Receipt (signed + logged)   │
+└─────────────────────────────────────────┘
+```
+
+---
+
 ## 1. System Architecture Overview
 
-The **Brompt Engine** addresses the fundamental limitations of modern LLM agents: non-deterministic execution paths and linear context drift (`O(N)` token growth). It acts as an execution middleware positioning itself between host application environments and upstream model endpoints.
+The **Brompt Engine** addresses the fundamental limitations of modern LLM agents: non-deterministic execution paths and linear context drift (`O(N)` token growth). It acts as a compliance middleware positioning itself between host application environments and upstream model endpoints.
 
 **Performance Note:** The security pipeline is `O(N)` on input length, but with a 64KB cap the worst-case runtime is bounded. In practice the LLM provider call (1–10s) dominates end-to-end latency by 2–3 orders of magnitude, so input-size variance in the pipeline is negligible.
 
@@ -98,19 +147,20 @@ graph TD
 ### Core Architecture Pillars
 
 | Pillar | Description |
-|---|---|
-| **Defense in Depth Security** | Multi-layered protection: input sanitization, output redaction, payload size limits, rate limiting, and hash-chained audit logging |
+|---|---|---|
+| **Signed Execution Receipts** | Every `ExecutionResult` is HMAC-signed with stage flags + timestamp — non-repudiable proof that a response passed through the full compliance pipeline |
+| **Hash-Chained Audit Log** | SHA-256 append-only chain with `AuditLog.verify()` — detects any tampering retroactively. Every security event is recorded with an immutable link |
+| **Deterministic Replay** | `PromptClient.replay(id, model=X)` re-runs the same messages on a different model and diffs the output — catches **prompt drift** when upgrading models |
+| **Policy-as-Code** | Per-tenant YAML policies (allow/deny per `caller_id`) evaluated before the prompt reaches any provider. No code changes needed per customer |
+| **Human-in-the-Loop** | Configurable confidence thresholds (pass / hold-for-review / block) for gray-zone inputs — guarantees human oversight in sensitive deployments |
+| **Defense in Depth Security** | Multi-layered: input canonicalization (NFKC, zero-width, base64, leetspeak), regex blocklist, LLM semantic classifier, output redaction |
 | **Bounded State Management** | Thread-safe `deque(maxlen=max_turns)` turn history — no raw message accumulation across turns |
 | **Structured Type Contracts** | Pydantic v2 schema validation guarantees typed, programmatic outputs for downstream tooling |
-| **Modern Type Safety** | Python 3.10+ `dict`, `list`, `str \| None` annotations for better IDE support and static analysis |
 | **Pluggable Provider System** | 7 LLM providers: Anthropic, OpenAI, Ollama, Gemini, Mistral, Azure OpenAI, LM Studio — sync + async |
-| **Template Engine** | Variable interpolation, filters (`upper`, `json`, `now`, etc.), conditionals, loops — 6 built-in prompt templates |
 | **Hooks/Middleware** | Pipeline hooks (Logging, Timing, Validation, Audit, RateLimit, Security) with before/after execution |
-| **Observability** | Distributed tracing, Prometheus-format metrics, alert rules with condition evaluation |
 | **Circuit Breaker** | CLOSED/OPEN/HALF_OPEN state machine protecting providers from cascading failures; fallback support |
 | **Model Router** | Heuristic complexity classifier (word count, code/math markers, analytical keywords) with 4 strategies: CHEAPEST, FASTEST, BEST_QUALITY, FALLBACK |
-| **Semantic Classifier** | Opt-in LLM-based injection classifier — catches paraphrased attacks the regex layer misses |
-| **Pricing & Optimization** | Cost estimation per model, token optimization with caching, savings tracking |
+| **Pricing & Optimization** | Per-model cost estimation, token optimization with compression, savings tracking |
 | **CLI (Typer)** | 8 commands: `chat`, `run`, `history`, `audit`, `status`, `templates`, `config`, `clear` |
 | **Web UI** | Streamlit-based interface with chat panel, metrics dashboard, audit viewer, template browser |
 | **Tkinter GUI** | Always-on-top floating widget with Docs, Live, Chart, Chat, Settings tabs |
@@ -246,7 +296,7 @@ Brompt/
 │       ├── audit.py                  # Hash-chained, tamper-evident audit log
 │       ├── config.py                 # Dataclass configs (WidgetConfig, ProviderConfig, etc.)
 │       ├── session.py                # Session management (Session, SessionManager, Message)
-│       ├── widget.py                 # Unified BromptWidget entry point
+│       ├── widget.py                 # PromptClient — unified client entry point
 │       ├── hooks.py                  # Hooks/middleware system (Logging, Timing, Validation, etc.)
 │       ├── observability.py          # Tracing, metrics (Prometheus), alert management
 │       ├── circuit_breaker.py        # CLOSED/OPEN/HALF_OPEN state machine with fallback
@@ -272,7 +322,7 @@ Brompt/
 │       │   ├── __init__.py           # CLI package
 │       │   └── main.py               # Typer-based CLI (8 commands)
 │       ├── guiapp/                   # Tkinter GUI application
-│       │   ├── __init__.py           # BromptWidget — floating always-on-top panel
+│       │   ├── __init__.py           # BromptWidget — floating always-on-top panel (GUI, not backend)
 │       │   ├── ui.py                 # Tab bar, title bar, resize grip, tooltip, keyboard bindings
 │       │   ├── chart.py              # ChartEngine — 5 chart types (bar, line, area, stacked, donut)
 │       │   ├── theme.py              # Design tokens (colors, fonts, spacing)
@@ -534,17 +584,19 @@ Commands:
   clear      Clear engine memory and history
 ```
 
-### `BromptWidget(config=None)`
+### `PromptClient(config=None)` (alias: `BromptWidget`)
 
 Unified high-level entry point combining engine, session, and widget config.
 
 ```python
-from brompt import BromptWidget
+from brompt import PromptClient
 
-widget = BromptWidget()
-result = widget.execute("Hello!")
+client = PromptClient()
+result = client.execute("Hello!")
 print(result.data)
 ```
+
+> **Note:** `BromptWidget` is maintained as a backward-compatible alias for `PromptClient`.
 
 ### Template Engine
 
@@ -621,13 +673,13 @@ streamlit run webui/streamlit_app.py
 
 Opens a browser-based interface with chat panel, metrics dashboard, audit log viewer, and template browser.
 
-### Tkinter GUI
+### Tkinter GUI (compliance dashboard)
 
 ```bash
 python -m brompt.guiapp [--live]
 ```
 
-Always-on-top floating widget with 5 tabs (Docs, Live Status, Charts, Chat, Settings), system tray minimize, and live engine monitoring.
+Always-on-top floating widget with 5 tabs (Docs, Live Status, Charts, Chat, Settings), system tray minimize, and live engine monitoring. The GUI's `BromptWidget` class is the **frontend** — it uses `PromptClient` (the backend client) internally.
 
 ---
 
@@ -714,25 +766,42 @@ matrix:
 
 ## 11. Production Readiness
 
-**Current Status: Production-Ready (v2)** — Brompt is now a stable, feature-complete LLM gateway. The following capabilities are shipped:
+**Current Status: Production-Ready (v2)** — Brompt is designed for regulated industries where compliance, non-repudiation, and auditability are requirements, not nice-to-haves.
 
-- ✅ Security guardrails with input sanitization (regex blocklist — treat as a first filter, not a guarantee)
-- ✅ Bounded turn history (`deque(maxlen=max_turns)`)
-- ✅ Schema validation
-- ✅ Rate limiting (in-process sliding window; not distributed — multi-instance needs Redis)
-- ✅ Security audit logging (SHA-256 hash-chained, append-only, tamper-evident via `AuditLog.verify()`)
-- ✅ Output sanitization layer (redacts secret-like strings before they reach the caller)
+### Compliance & Governance
+
+- ✅ **Hash-chained audit log** — SHA-256 append-only chain; `AuditLog.verify()` detects tampering
+- ✅ **Signed execution receipts** — HMAC-hashed `ExecutionResult` with stage flags and timestamps (legal-grade proof of pipeline passage)
+- ✅ **Policy-as-code** — per-tenant YAML policies evaluated before provider execution
+- ✅ **Human-in-the-loop** — configurable gray-zone threshold for sensitive deployments
+- ✅ **Security guardrails** — multi-layer: canonicalization, regex blocklist, LLM classifier, output redaction
+- ✅ **Rate limiting** (in-process sliding window; distributed variant needs Redis)
+- ✅ **Output sanitization** — redacts secret-like strings before reaching the caller
+
+### Provider & Performance
+
 - ✅ 7 LLM providers (Anthropic, OpenAI, Ollama, Gemini, Mistral, Azure OpenAI, LM Studio)
 - ✅ Async execution path (`execute_async` with thread offloading for sync providers)
-- ✅ Template engine with filters, conditionals, loops
-- ✅ Hooks/middleware pipeline (before/after execution)
-- ✅ Observability (tracing, Prometheus metrics, alert rules)
-- ✅ Typer CLI (8 commands) + Streamlit web UI + Tkinter GUI
 - ✅ Circuit Breaker (CLOSED/OPEN/HALF_OPEN state machine with fallback)
 - ✅ Model Router (heuristic complexity classification, 4 routing strategies)
+- ✅ Token optimization with compression and caching
+- ✅ Per-model cost estimation and savings tracking
+
+### Interfaces
+
+- ✅ Typer CLI (8 commands)
+- ✅ Streamlit web UI
+- ✅ Tkinter floating widget GUI
+- ✅ FastAPI REST API
+- ✅ Template engine with filters, conditionals, loops
+- ✅ Observability (tracing, Prometheus metrics, alert rules)
 - ✅ Redis caching (key-value with in-process LRU/SmartCache fallback)
-- ✅ LLM-based semantic injection classifier (opt-in, catches paraphrased attacks)
-- ⚠️ **Pending:** Distributed rate limiting for multi-instance deployments
+
+### Roadmap
+
+- ⚠️ **Signed execution receipt serialization** — produce standalone `.receipt` files for external audit
+- ⚠️ **Deterministic replay CLI** — `brompt replay <audit-id> --model=X` with diff output
+- ⚠️ **Distributed rate limiting** — multi-instance Redis-backed rate limiter
 
 ---
 
