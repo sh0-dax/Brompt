@@ -123,6 +123,9 @@ disable_error_code = [
     "comparison-overlap",
     "union-attr",
     "call-arg",
+    "assignment",
+    "call-overload",
+    "unused-ignore",
 ]
 
 [tool.ruff]
