@@ -72,7 +72,7 @@ They route. Brompt proves.
 
 | Why NOT LangChain / LiteLLM | Brompt's answer |
 |---|---|
-| No non-repudiation — responses can't be verified after the fact | **Signed execution receipts** (HMAC/hash-chain per `ExecutionResult`) — every response is provably authentic and tamper-evident |
+| No non-repudiation — responses can't be verified after the fact | **Signed execution receipts** (audit `entry_hash` embedded in each `ExecutionResult`) — every response is provably linked to a tamper-evident audit entry |
 | Audit is an afterthought (text logs) | **Hash-chained audit log** — `AuditLog.verify()` replays the chain and detects any tampering |
 | No deterministic replay — changing models changes behavior silently | `PromptClient.replay(id, model=X)` — re-runs the same prompt on a different model and diffs the result to detect **prompt drift** |
 | Security filters are either absent or opaque | **Defense-in-depth**: regex blocklist + LLM semantic classifier + output redaction, all recorded in the audit chain |
@@ -148,7 +148,7 @@ flowchart TD
 
 | Pillar | Description |
 | --- | --- |
-| **Signed Execution Receipts** | Every `ExecutionResult` is HMAC-signed with stage flags + timestamp — non-repudiable proof that a response passed through the full compliance pipeline |
+| **Signed Execution Receipts** | Every `ExecutionResult` carries the audit entry's HMAC-signed `entry_hash` as a `receipt_hash` — non-repudiable proof that a response passed through the full compliance pipeline |
 | **Hash-Chained Audit Log** | SHA-256 append-only chain with `AuditLog.verify()` — detects any tampering retroactively. Every security event is recorded with an immutable link |
 | **Deterministic Replay** | `PromptClient.replay(id, model=X)` re-runs the same messages on a different model and diffs the output — catches **prompt drift** when upgrading models |
 | **Policy-as-Code** | Per-tenant YAML policies (allow/deny per `caller_id`) evaluated before the prompt reaches any provider. No code changes needed per customer |
@@ -302,6 +302,7 @@ Brompt/
 │       ├── circuit_breaker.py        # CLOSED/OPEN/HALF_OPEN state machine with fallback
 │       ├── router.py                 # ModelRouter — heuristic complexity classification, 4 strategies
 │       ├── classifier.py             # LLM-based semantic injection classifier (opt-in)
+│       ├── policy.py                 # Policy-as-Code engine (per-tenant YAML allow/deny rules)
 │       ├── pricing.py                # Cost estimation per provider/model
 │       ├── optimizer.py              # Token optimization and compression
 │       ├── core/
@@ -338,6 +339,7 @@ Brompt/
 │   ├── test_providers.py            # Provider Abstraction Unit Tests
 │   ├── test_ratelimit.py            # Rate Limiter Unit Tests
 │   ├── test_audit.py                # Audit Log Unit Tests
+│   ├── test_policy.py               # Policy Engine Unit Tests
 │   ├── test_api.py                  # API endpoint tests
 │   └── ...                          # Feedback, retry, classifier, etc.
 ├── agent.brompt.yaml                # Declarative Runtime Manifest
@@ -370,8 +372,14 @@ rate_limit:
   max_requests: 30
   window_seconds: 60
 
-schema_validation:
-  strict_mode: true
+# Policy rules (optional — see Policy-as-Code)
+# security_policy:
+#   rules:
+#     - caller_id: "tenant-alpha-*"
+#       action: allow
+#     - caller_id: "suspected-bot-*"
+#       action: deny
+#       reason: "known abuse pattern"
 ```
 
 ---
@@ -466,7 +474,7 @@ If none are set, the engine runs in **dry-run / validation-only mode** — input
 
 ## 8. API Reference
 
-### `BromptEngine(config_path, provider=None, async_provider=None, rate_limiter=None, injection_classifier=None, circuit_breaker=None)`
+### `BromptEngine(config_path, provider=None, async_provider=None, audit_log_path=None, audit_secret_key=None, rate_limiter=None, injection_classifier=None, circuit_breaker=None)`
 
 Core runtime entry point. Loads YAML manifest and initializes all subsystems.
 
@@ -476,14 +484,15 @@ Core runtime entry point. Loads YAML manifest and initializes all subsystems.
 | `provider` | `LLMProvider \| None` | `None` | Sync provider (auto-detected from env if `None`) |
 | `async_provider` | `LLMProvider \| None` | `None` | Async provider for `execute_async()` |
 | `audit_log_path` | `str \| None` | `None` | Custom audit log path |
+| `audit_secret_key` | `str \| None` | `None` | HMAC signing key for audit entries (falls back to `BROMPT_AUDIT_SECRET` env var) |
 | `rate_limiter` | `RateLimiterBackend \| None` | `None` | Custom rate limiter instance |
 | `injection_classifier` | `InjectionClassifier \| None` | `None` | Optional LLM-based injection classifier |
 | `circuit_breaker` | `CircuitBreaker \| None` | `None` | Optional circuit breaker for provider calls |
 
 **Methods:**
 
-- `execute(user_query, context=None, caller_id="default", system_prompt=None) → ExecutionResult` — Synchronous pipeline.
-- `execute_async(user_query, context=None, caller_id="default", system_prompt=None) → ExecutionResult` — Same pipeline, awaitable.
+- `execute(user_query, context=None, caller_id="default", system_prompt=None, override_messages=None) → ExecutionResult` — Synchronous pipeline. When `override_messages` is set, those messages are sent to the provider instead of the auto-generated history.
+- `execute_async(user_query, context=None, caller_id="default", system_prompt=None, override_messages=None) → ExecutionResult` — Same pipeline, awaitable.
 
 ### `LLMProvider` (ABC)
 
@@ -528,9 +537,12 @@ SHA-256 hash-chained, append-only audit log.
 
 | Method | Returns | Description |
 |---|---|---|
-| `record(event, state_id, is_secure, detail=None)` | `dict` | Append a tamper-evident record |
+| `record(event, state_id, is_secure, detail=None, latency_ms=None, tokens_used=None, messages=None)` | `dict` | Append a tamper-evident record; `messages` stores the exact prompt sent for replay |
 | `verify()` | `bool` | Replay chain; `False` if tampered |
 | `read_all()` | `list[dict]` | Read all entries |
+| `find_entry(entry_hash)` | `dict \| None` | Look up a single entry by its hash |
+| `replay(entry_hash, provider, system=None)` | `dict` | Re-run stored messages on a different provider |
+| `is_signed` | `bool` | `True` when the log was opened with a signing key |
 
 ### `CircuitBreaker(failure_threshold=5, recovery_timeout=30.0, half_open_max_calls=3)`
 
@@ -559,13 +571,14 @@ Routes prompts to the optimal provider based on complexity classification.
 | `register_provider(name, provider)` | `None` | Register a provider instance for routing |
 | `register_providers(providers)` | `None` | Bulk register providers by dict |
 
-### `LLMInjectionClassifier(provider, confidence_threshold=0.7)`
+### `LLMInjectionClassifier(provider, confidence_threshold=0.7, pass_threshold=0.4, block_threshold=0.7)`
 
 Opt-in LLM-based semantic injection detector — catches paraphrased attacks.
 
 | Method | Returns | Description |
 |---|---|---|
 | `classify(text)` | `ClassificationResult` | Structured JSON: `{is_injection, confidence, reasoning}` |
+| `classify_tiered(text)` | `ClassificationResult` | Three-tier decision: PASS / HOLD / BLOCK based on threshold bands |
 | `is_blocked(text)` | `ClassificationResult \| None` | `None` if safe; result if blocked above threshold |
 
 ### CLI Commands
@@ -584,7 +597,7 @@ Commands:
   clear      Clear engine memory and history
 ```
 
-### `PromptClient(config=None)` (alias: `BromptWidget`)
+### `PromptClient(config=None, audit_log_path=None)` (alias: `BromptWidget`)
 
 Unified high-level entry point combining engine, session, and widget config.
 
@@ -592,8 +605,8 @@ Unified high-level entry point combining engine, session, and widget config.
 from brompt import PromptClient
 
 client = PromptClient()
-result = client.execute("Hello!")
-print(result.data)
+result = await client.prompt("Hello!")
+print(result.response)
 ```
 
 > **Note:** `BromptWidget` is maintained as a backward-compatible alias for `PromptClient`.
@@ -771,7 +784,7 @@ matrix:
 ### Compliance & Governance
 
 - ✅ **Hash-chained audit log** — SHA-256 append-only chain; `AuditLog.verify()` detects tampering
-- ✅ **Signed execution receipts** — HMAC-hashed `ExecutionResult` with stage flags and timestamps (legal-grade proof of pipeline passage)
+- ✅ **Signed execution receipts** — audit `entry_hash` embedded in every `ExecutionResult`; HMAC-signed audit entries when `audit_secret_key` is configured (legal-grade proof of pipeline passage)
 - ✅ **Policy-as-code** — per-tenant YAML policies evaluated before provider execution
 - ✅ **Human-in-the-loop** — configurable gray-zone threshold for sensitive deployments
 - ✅ **Security guardrails** — multi-layer: canonicalization, regex blocklist, LLM classifier, output redaction
@@ -800,7 +813,7 @@ matrix:
 ### Roadmap
 
 - ⚠️ **Signed execution receipt serialization** — produce standalone `.receipt` files for external audit
-- ⚠️ **Deterministic replay CLI** — `brompt replay <audit-id> --model=X` with diff output
+- ⚠️ **Deterministic replay CLI** — `brompt replay <audit-id> --model=X` with diff output (engine `replay()` exists; CLI command pending)
 - ⚠️ **Distributed rate limiting** — multi-instance Redis-backed rate limiter
 
 ---
