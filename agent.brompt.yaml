@@ -2,13 +2,101 @@ metadata:
   name: DefaultAgent
   version: 2.0.0
   environment: production
+
 security_policy:
   isolation_level: ZERO_TRUST
   sanitize_inputs: true
   max_payload_size_kb: 64
+  rules:
+    - caller_id: "trusted-*"
+      action: allow
+    - caller_id: "suspected-bot-*"
+      action: deny
+      reason: "known abuse pattern"
+
 memory_strategy:
   paging_mode: VIRTUAL_STATE_O1
   max_history_turns: 10
+  storage_path: ./data/brompt_memory.json
+
 rate_limit:
   max_requests: 30
   window_seconds: 60
+
+provider:
+  type: openai
+  model: gpt-4
+  api_key: null
+  base_url: null
+  organization_id: null
+
+generation:
+  temperature: 0.7
+  max_tokens: 2000
+  top_p: 1.0
+  frequency_penalty: 0.0
+  presence_penalty: 0.0
+
+routing:
+  enabled: false
+  strategy: cheapest
+  fallback_provider: null
+  profiles:
+    - name: openai
+      model: gpt-4o
+      cost_per_1k_input: 2.50
+      cost_per_1k_output: 10.00
+      latency_p50_ms: 1200
+      quality_score: 0.92
+    - name: anthropic
+      model: claude-3-5-sonnet
+      cost_per_1k_input: 3.00
+      cost_per_1k_output: 15.00
+      latency_p50_ms: 1500
+      quality_score: 0.94
+    - name: google
+      model: gemini-2.0-flash
+      cost_per_1k_input: 0.15
+      cost_per_1k_output: 0.60
+      latency_p50_ms: 800
+      quality_score: 0.85
+    - name: mistral
+      model: mistral-large
+      cost_per_1k_input: 2.00
+      cost_per_1k_output: 6.00
+      latency_p50_ms: 1100
+      quality_score: 0.88
+    - name: ollama
+      model: llama3
+      cost_per_1k_input: 0.0
+      cost_per_1k_output: 0.0
+      latency_p50_ms: 3000
+      quality_score: 0.75
+
+cache:
+  enabled: true
+  ttl_seconds: 3600
+  max_entries: 1000
+  strategy: lru
+  redis_url: null
+
+feedback:
+  enabled: true
+  storage_path: ./data/brompt_feedback.json
+  regression_threshold: 0.15
+
+hooks:
+  enabled: true
+  builtin_logging: true
+  builtin_content_filter: false
+
+session:
+  max_sessions: 100
+  max_messages_per_session: 100
+  context_window_size: 20
+  session_ttl_minutes: 60
+
+logging:
+  level: INFO
+  file_path: ./logs/brompt.log
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

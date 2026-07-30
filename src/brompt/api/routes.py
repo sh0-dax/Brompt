@@ -1,14 +1,20 @@
-"""FastAPI routes — wired to BromptEngine for execution and FeedbackLoop for analytics."""
+"""FastAPI routes — wired to BromptEngine for execution and FeedbackLoop for analytics.
+
+Uses ``app.state`` to hold shared dependencies instead of module-level
+globals, making the app testable with ``TestClient``.
+"""
 
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from ..config import WidgetConfig
 from ..core import BromptEngine
 from ..feedback import FeedbackLoop, PromptOutcome
 from .schemas import (
@@ -22,30 +28,46 @@ from .schemas import (
 
 logger = logging.getLogger("brompt.api")
 
-_engine: BromptEngine | None = None
-_feedback: FeedbackLoop | None = None
+API_KEY = os.getenv("BROMPT_API_KEY", "")
 
 
-def _get_engine() -> BromptEngine:
-    global _engine
-    if _engine is None:
-        manifest = Path("agent.brompt.yaml")
-        if not manifest.exists():
-            manifest = Path(__file__).resolve().parent.parent.parent.parent / "agent.brompt.yaml"
-        _engine = BromptEngine(config_path=str(manifest))
-        logger.info("BromptEngine initialised from %s", manifest)
-    return _engine
+def _load_engine_config() -> WidgetConfig:
+    """Load config from YAML manifest, falling back to env vars."""
+    manifest = Path("agent.brompt.yaml")
+    if not manifest.exists():
+        manifest = Path(__file__).resolve().parent.parent.parent.parent / "agent.brompt.yaml"
+    if manifest.exists():
+        return WidgetConfig.from_yaml(str(manifest))
+    return WidgetConfig.from_env()
 
 
-def _get_feedback() -> FeedbackLoop:
-    global _feedback
-    if _feedback is None:
-        engine = _get_engine()
-        _feedback = FeedbackLoop(
-            storage_path=engine.config.feedback.storage_path,
-            audit_log=engine.audit,
-        )
-    return _feedback
+def verify_api_key(request: Request) -> None:
+    """Dependency: reject requests missing or with invalid API key.
+
+    Skipped when ``BROMPT_API_KEY`` is not set (development mode).
+    """
+    if not API_KEY:
+        return
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer ") and auth[7:] == API_KEY:
+        return
+    raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+async def get_engine(request: Request) -> BromptEngine:
+    """Dependency: return the shared BromptEngine from app.state."""
+    engine: BromptEngine | None = getattr(request.app.state, "engine", None)
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Engine not initialised")
+    return engine
+
+
+async def get_feedback(request: Request) -> FeedbackLoop:
+    """Dependency: return the shared FeedbackLoop from app.state."""
+    feedback: FeedbackLoop | None = getattr(request.app.state, "feedback", None)
+    if feedback is None:
+        raise HTTPException(status_code=503, detail="Feedback not initialised")
+    return feedback
 
 
 def _map_outcome(result, latency_ms: float) -> PromptOutcome:
@@ -80,6 +102,20 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.on_event("startup")
+    async def init_dependencies():
+        config = _load_engine_config()
+        manifest = Path("agent.brompt.yaml")
+        if not manifest.exists():
+            manifest = Path(__file__).resolve().parent.parent.parent.parent / "agent.brompt.yaml"
+        engine = BromptEngine(config_path=str(manifest) if manifest.exists() else None)
+        app.state.engine = engine
+        app.state.feedback = FeedbackLoop(
+            storage_path=config.feedback.storage_path,
+            audit_log=engine.audit,
+        )
+        logger.info("BromptEngine initialised from %s", manifest if manifest.exists() else "env")
+
     @app.middleware("http")
     async def add_request_id(request: Request, call_next):
         request_id = str(uuid.uuid4())[:8]
@@ -95,10 +131,13 @@ def create_app() -> FastAPI:
         "/api/v1/prompts/generate",
         response_model=GeneratedPromptResponse,
         tags=["Prompts"],
+        dependencies=[Depends(verify_api_key)],
     )
-    async def generate_prompt(req: GeneratePromptRequest):
-        engine = _get_engine()
-        feedback = _get_feedback()
+    async def generate_prompt(
+        req: GeneratePromptRequest,
+        engine: BromptEngine = Depends(get_engine),
+        feedback: FeedbackLoop = Depends(get_feedback),
+    ):
         start = time.time()
 
         result = await engine.execute_async(
@@ -131,9 +170,12 @@ def create_app() -> FastAPI:
         "/api/v1/feedback/record",
         response_model=FeedbackResponse,
         tags=["Feedback"],
+        dependencies=[Depends(verify_api_key)],
     )
-    async def record_feedback(fb: RecordFeedbackRequest):
-        feedback = _get_feedback()
+    async def record_feedback(
+        fb: RecordFeedbackRequest,
+        feedback: FeedbackLoop = Depends(get_feedback),
+    ):
         try:
             outcome = PromptOutcome.from_string(fb.outcome)
         except ValueError:
@@ -155,16 +197,21 @@ def create_app() -> FastAPI:
         "/api/v1/reports/performance",
         response_model=PerformanceReportResponse,
         tags=["Reports"],
+        dependencies=[Depends(verify_api_key)],
     )
-    async def performance_report():
-        return _get_feedback().get_performance_report()
+    async def performance_report(
+        feedback: FeedbackLoop = Depends(get_feedback),
+    ):
+        return feedback.get_performance_report()
 
     @app.get(
         "/api/v1/reports/templates",
         tags=["Reports"],
+        dependencies=[Depends(verify_api_key)],
     )
-    async def templates_summary():
-        feedback = _get_feedback()
+    async def templates_summary(
+        feedback: FeedbackLoop = Depends(get_feedback),
+    ):
         return [
             {
                 "template_id": tid,
@@ -181,9 +228,13 @@ def create_app() -> FastAPI:
         "/api/v1/reports/templates/{template_id}",
         response_model=TemplateHealthResponse,
         tags=["Reports"],
+        dependencies=[Depends(verify_api_key)],
     )
-    async def template_health(template_id: str):
-        health = _get_feedback().get_template_health(template_id)
+    async def template_health(
+        template_id: str,
+        feedback: FeedbackLoop = Depends(get_feedback),
+    ):
+        health = feedback.get_template_health(template_id)
         if health.get("status") == "unknown":
             raise HTTPException(status_code=404, detail="Template not found")
         return TemplateHealthResponse(
@@ -198,19 +249,25 @@ def create_app() -> FastAPI:
     @app.get(
         "/api/v1/reports/suggestions",
         tags=["Reports"],
+        dependencies=[Depends(verify_api_key)],
     )
-    async def improvement_suggestions():
-        return _get_feedback().generate_improvement_suggestions()
+    async def improvement_suggestions(
+        feedback: FeedbackLoop = Depends(get_feedback),
+    ):
+        return feedback.generate_improvement_suggestions()
 
     @app.get(
         "/api/v1/reports/best-template",
         tags=["Reports"],
+        dependencies=[Depends(verify_api_key)],
     )
-    async def best_template():
-        best = _get_feedback().get_best_template()
+    async def best_template(
+        feedback: FeedbackLoop = Depends(get_feedback),
+    ):
+        best = feedback.get_best_template()
         if best is None:
             raise HTTPException(status_code=404, detail="Insufficient data for recommendation")
-        stats = _get_feedback().template_stats.get(best)
+        stats = feedback.template_stats.get(best)
         return {
             "best_template": best,
             "success_rate": f"{stats.success_rate:.1f}%" if stats else "N/A",
@@ -218,8 +275,9 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/health", tags=["System"])
-    async def health_check():
-        feedback = _get_feedback()
+    async def health_check(
+        feedback: FeedbackLoop = Depends(get_feedback),
+    ):
         return {
             "status": "healthy",
             "version": "0.1.0-alpha",

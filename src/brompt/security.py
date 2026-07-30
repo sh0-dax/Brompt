@@ -1,10 +1,20 @@
-"""Security pipeline for prompt injection filtering and sanitization."""
+"""Security pipeline for prompt injection filtering and sanitization.
+
+Two-layer defence:
+1. Fast regex-based pattern matching (always on).
+2. Optional LLM-based semantic classification (opt-in) via
+   ``LLMInjectionClassifier`` — detects paraphrases, translations,
+   and novel injection patterns that regexes miss.
+"""
 
 import base64
 import logging
 import re
 import unicodedata
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from .classifier import LLMInjectionClassifier
 
 logger = logging.getLogger("brompt.security")
 
@@ -17,6 +27,17 @@ _ZERO_WIDTH_CHARS = str.maketrans({c: None for c in "\u200b\u200c\u200d\u2060\uf
 
 
 class SecurityEngine:
+    """Security pipeline — regex fast-path with optional LLM deep scan.
+
+    Usage with classifier::
+
+        from .classifier import LLMInjectionClassifier
+
+        engine = SecurityEngine()
+        engine.set_classifier(LLMInjectionClassifier(provider))
+        sanitized = engine.sanitize(user_input)
+    """
+
     INJECTION_PATTERNS: ClassVar[list[tuple[str, str]]] = [
         (r"\bignore\s+(all\s+)?previous\s+instructions\b", "Direct Injection: Instruction Override"),
         (r"\bsystem\s+prompt\s+override\b", "Direct Injection: System Override"),
@@ -98,12 +119,26 @@ class SecurityEngine:
             text = text.replace(old, new)
         return text
 
+    _classifier: "LLMInjectionClassifier | None" = None
+
+    @classmethod
+    def set_classifier(cls, classifier: "LLMInjectionClassifier | None") -> None:
+        """Opt-in to LLM-based semantic injection detection.
+
+        When set, each call to ``sanitize()`` falls through to the
+        classifier *after* passing the regex fast-path.  The classifier
+        costs one extra LLM call per request.
+        """
+        cls._classifier = classifier
+
     @classmethod
     def sanitize(cls, text: str, max_payload_size_kb: int = 64) -> str:
         """Sanitizes user input and enforces strict safety rules.
 
         Applies Unicode canonicalization, zero-width char stripping,
         leetspeak normalization, base64 detection, and regex pattern matching.
+        If an ``LLMInjectionClassifier`` is registered, passes the text
+        through semantic classification as a second line of defence.
 
         Raises:
             SecurityViolationError: If input matches a blocked pattern.
@@ -133,6 +168,15 @@ class SecurityEngine:
                 raise SecurityViolationError(
                     f"Security Violation: [{reason}]"
                 )
+
+        if cls._classifier is not None:
+            result = cls._classifier.classify(text)
+            if result.tier.name == "BLOCK":
+                logger.warning("Security violation: LLM classifier blocked input (confidence=%.2f)", result.confidence)
+                raise SecurityViolationError(
+                    f"Security Violation: [LLM classifier — {result.reasoning}]"
+                )
+
         return normalized.strip()
 
     @classmethod

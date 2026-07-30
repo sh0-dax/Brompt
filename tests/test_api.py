@@ -4,6 +4,18 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from brompt.api.routes import app
+from brompt.core import BromptEngine
+from brompt.feedback import FeedbackLoop
+
+
+@pytest.fixture(autouse=True)
+def _init_app_state():
+    engine = BromptEngine(config_path="agent.brompt.yaml")
+    app.state.engine = engine
+    app.state.feedback = FeedbackLoop(
+        storage_path=":memory:",
+        audit_log=engine.audit,
+    )
 
 
 @pytest.fixture

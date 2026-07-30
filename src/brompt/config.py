@@ -3,6 +3,7 @@
 import os
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Literal, Optional
 
 
@@ -60,10 +61,32 @@ class GenerationConfig:
 
 
 @dataclass
+class RoutingProfile:
+    name: str = ""
+    model: str = ""
+    cost_per_1k_input: float = 0.0
+    cost_per_1k_output: float = 0.0
+    latency_p50_ms: float = 1000.0
+    quality_score: float = 0.5
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "RoutingProfile":
+        return cls(
+            name=d.get("name", ""),
+            model=d.get("model", ""),
+            cost_per_1k_input=float(d.get("cost_per_1k_input", 0)),
+            cost_per_1k_output=float(d.get("cost_per_1k_output", 0)),
+            latency_p50_ms=float(d.get("latency_p50_ms", 1000)),
+            quality_score=float(d.get("quality_score", 0.5)),
+        )
+
+
+@dataclass
 class RoutingConfig:
     enabled: bool = False
     strategy: str = "cheapest"
     fallback_provider: Optional[str] = None
+    profiles: list[RoutingProfile] = field(default_factory=list)
 
     def __post_init__(self):
         valid = {"cheapest", "fastest", "best_quality", "fallback"}
@@ -129,6 +152,95 @@ class WidgetConfig:
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     debug: bool = False
     default_template: str = "default"
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> "WidgetConfig":
+        """Load configuration from a YAML manifest file."""
+        import yaml
+        path = Path(path)
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+
+        cfg = cls()
+
+        if "provider" in data:
+            p = data["provider"]
+            ptype = ProviderType(p.get("type", "openai"))
+            cfg.provider = ProviderConfig(
+                type=ptype,
+                model=p.get("model", "gpt-4"),
+                api_key=p.get("api_key") or os.getenv("BROMPT_API_KEY"),
+                base_url=p.get("base_url"),
+                organization_id=p.get("organization_id"),
+            )
+
+        if "generation" in data:
+            g = data["generation"]
+            cfg.generation = GenerationConfig(
+                temperature=g.get("temperature", 0.7),
+                max_tokens=g.get("max_tokens", 2000),
+                top_p=g.get("top_p", 1.0),
+                frequency_penalty=g.get("frequency_penalty", 0.0),
+                presence_penalty=g.get("presence_penalty", 0.0),
+                stop_sequences=g.get("stop_sequences", []),
+            )
+
+        if "routing" in data:
+            r = data["routing"]
+            profiles = [RoutingProfile.from_dict(p) for p in r.get("profiles", [])]
+            cfg.routing = RoutingConfig(
+                enabled=r.get("enabled", False),
+                strategy=r.get("strategy", "cheapest"),
+                fallback_provider=r.get("fallback_provider"),
+                profiles=profiles,
+            )
+
+        if "cache" in data:
+            c = data["cache"]
+            cfg.cache = CacheConfig(
+                enabled=c.get("enabled", True),
+                ttl_seconds=c.get("ttl_seconds", 3600),
+                max_entries=c.get("max_entries", 1000),
+                strategy=c.get("strategy", "lru"),
+                redis_url=c.get("redis_url"),
+            )
+
+        if "feedback" in data:
+            fb = data["feedback"]
+            cfg.feedback = FeedbackConfig(
+                enabled=fb.get("enabled", True),
+                storage_path=fb.get("storage_path", "./data/brompt_feedback.json"),
+                regression_threshold=fb.get("regression_threshold", 0.15),
+            )
+
+        if "session" in data:
+            s = data["session"]
+            cfg.session = SessionConfig(
+                max_sessions=s.get("max_sessions", 100),
+                max_messages_per_session=s.get("max_messages_per_session", 100),
+                context_window_size=s.get("context_window_size", 20),
+                session_ttl_minutes=s.get("session_ttl_minutes", 60),
+            )
+
+        if "hooks" in data:
+            h = data["hooks"]
+            cfg.hooks = HooksConfig(
+                enabled=h.get("enabled", True),
+                builtin_logging=h.get("builtin_logging", True),
+                builtin_content_filter=h.get("builtin_content_filter", False),
+                blocked_words=h.get("blocked_words", []),
+            )
+
+        if "logging" in data:
+            lc = data["logging"]
+            cfg.logging = LoggingConfig(
+                level=LogLevel(lc.get("level", "INFO")),
+                file_path=lc.get("file_path"),
+                format=lc.get("format", "%(asctime)s - %(name)s - %(levelname)s - %(message)s"),
+            )
+
+        cfg.debug = data.get("debug", False)
+        return cfg
 
     @classmethod
     def from_env(cls) -> "WidgetConfig":

@@ -402,18 +402,21 @@ with tab_playground:
 
             try:
                 import asyncio
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
 
-                result = loop.run_until_complete(
-                    widget.prompt(
+                async def _run_prompt():
+                    return await widget.prompt(
                         user_input=prompt,
                         template=selected_template or None,
                         session_id=session_id,
                         system_prompt=get_system_prompt(selected_template) if selected_template else None,
                     )
-                )
-                loop.close()
+
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    result = loop.run_until_complete(_run_prompt())
+                finally:
+                    loop.close()
 
                 if st.session_state.session_id is None and result.session_id:
                     st.session_state.session_id = result.session_id

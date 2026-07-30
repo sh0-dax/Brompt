@@ -18,6 +18,7 @@ import os
 import random
 import time
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 
 logger = logging.getLogger("brompt.providers")
 
@@ -111,6 +112,20 @@ class LLMProvider(ABC):
         ``ProviderError``; ``BromptEngine.execute_async`` falls back to
         running the sync ``generate`` in a thread instead."""
         raise ProviderError(f"{type(self).__name__} does not implement agenerate().")
+
+    def stream(self, messages: list[dict[str, str]], system: str | None = None) -> AsyncIterator[str]:
+        """Sync streaming — yields partial tokens as they arrive.
+
+        Default raises ``NotImplementedError`` (opt-in).  Override in
+        subclasses that support real-time token emission."""
+        raise NotImplementedError(f"{type(self).__name__} does not implement stream().")
+
+    async def astream(self, messages: list[dict[str, str]], system: str | None = None) -> AsyncIterator[str]:
+        """Async streaming — yields partial tokens as they arrive.
+
+        Default raises ``NotImplementedError`` (opt-in).  Override in
+        subclasses that support real-time token emission."""
+        raise NotImplementedError(f"{type(self).__name__} does not implement astream().")
 
 
 # ---------------------------------------------------------------------------

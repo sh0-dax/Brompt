@@ -3,6 +3,9 @@
 Routes each request to the optimal provider based on a configurable
 strategy (cheapest, fastest, best-quality, fallback) after classifying
 query complexity via heuristics (no ML model required).
+
+Provider profiles can be loaded from YAML configuration or registered
+programmatically via ``register_provider_profile()``.
 """
 
 import logging
@@ -52,12 +55,42 @@ class ProviderProfile:
         default_factory=lambda: {ComplexityLevel.SIMPLE, ComplexityLevel.MEDIUM, ComplexityLevel.COMPLEX}
     )
 
+    @classmethod
+    def from_config(cls, d: dict) -> "ProviderProfile":
+        return cls(
+            name=d.get("name", "unknown"),
+            provider_class=None,
+            model=d.get("model", "unknown"),
+            cost_per_1k_input=float(d.get("cost_per_1k_input", 0)),
+            cost_per_1k_output=float(d.get("cost_per_1k_output", 0)),
+            latency_p50_ms=float(d.get("latency_p50_ms", 1000)),
+            quality_score=float(d.get("quality_score", 0.5)),
+        )
+
 
 _PROVIDER_PROFILES: dict[str, ProviderProfile] = {}
+_CONFIG_PROFILES_LOADED = False
 
 
 def register_provider_profile(profile: ProviderProfile):
     _PROVIDER_PROFILES[profile.name] = profile
+
+
+def load_profiles_from_config(config: dict | None = None):
+    """Load provider profiles from a configuration dict (e.g. from YAML).
+
+    Call this once at startup. Existing programmatic registrations
+    are preserved; config profiles are added but do not replace them.
+    """
+    global _CONFIG_PROFILES_LOADED
+    if config is None:
+        return
+    profiles_raw = config.get("routing", {}).get("profiles", [])
+    for p in profiles_raw:
+        name = p.get("name", "")
+        if name and name not in _PROVIDER_PROFILES:
+            register_provider_profile(ProviderProfile.from_config(p))
+    _CONFIG_PROFILES_LOADED = True
 
 
 def _init_default_profiles():
@@ -125,11 +158,7 @@ class ModelRouter:
 
     @staticmethod
     def classify_complexity(query: str) -> ComplexityLevel:
-        """Heuristic-only complexity classification — no ML model needed.
-
-        Uses token count, code markers, math symbols, and keyword patterns
-        to estimate whether a query is simple, medium, or complex.
-        """
+        """Heuristic-only complexity classification — no ML model needed."""
         if not query or not query.strip():
             return ComplexityLevel.SIMPLE
 
@@ -154,10 +183,7 @@ class ModelRouter:
         return ComplexityLevel.SIMPLE
 
     def score_providers(self, complexity: ComplexityLevel) -> list[Route]:
-        """Score all registered providers for the given complexity level.
-
-        Returns a list of Route objects sorted by quality_score descending.
-        """
+        """Score all registered providers for the given complexity level."""
         routes: list[Route] = []
         for name in self._providers:
             profile = _PROVIDER_PROFILES.get(name)
