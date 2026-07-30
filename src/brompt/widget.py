@@ -10,6 +10,7 @@ from datetime import datetime
 from threading import Lock
 from typing import Optional, AsyncIterator
 
+from .audit import AuditLog
 from .config import WidgetConfig, ProviderConfig, GenerationConfig, ProviderType, RoutingConfig
 from .providers import ProviderFactory, LLMProvider, ProviderResult
 from .router import ModelRouter, RoutingStrategy
@@ -321,8 +322,12 @@ class PromptClient:
         enable_cache: bool = True,
         enable_auto_detect: bool = False,
         enable_streaming: bool = True,
+        audit_log_path: Optional[str] = None,
     ):
         self.config = config or WidgetConfig()
+        self._audit: Optional[AuditLog] = None
+        if audit_log_path:
+            self._audit = AuditLog(audit_log_path)
         errors = self.config.validate()
         if errors:
             raise ValueError("Invalid config:\n" + "\n".join(f"  - {e}" for e in errors))
@@ -652,6 +657,42 @@ class PromptClient:
         if self._feedback:
             report["feedback"] = self._feedback.get_performance_report()
         return report
+
+    def replay(self, entry_hash: str, model: Optional[str] = None, system_prompt: Optional[str] = None) -> dict:
+        """Re-run a previous audit entry on a (possibly different) model.
+
+        Requires ``audit_log_path`` to have been passed at construction.
+
+        Parameters
+        ----------
+        entry_hash :
+            The ``entry_hash`` of the audit entry to replay.
+        model :
+            Model name for the re-run (e.g. ``"gpt-4o"``).
+            Defaults to the current provider's model.
+        system_prompt :
+            Optional system prompt forwarded to the provider.
+
+        Returns
+        -------
+        A dict with keys ``original`` (audit entry) and ``replayed``
+        (:class:`PromptResult`) for comparison.
+        """
+        if self._audit is None:
+            raise RuntimeError("Replay requires audit_log_path to be set at construction")
+
+        provider = self._provider
+        if model and model != self.config.provider.model:
+            cfg = ProviderConfig(type=self.config.provider.type, model=model)
+            provider = ProviderFactory.from_config(cfg)
+
+        result = self._audit.replay(entry_hash, provider, system=system_prompt)
+        if "replayed" in result:
+            pr = result["replayed"]
+            from .providers_core import ProviderResult
+            if isinstance(pr, ProviderResult):
+                result["replayed"] = {"text": pr.text, "model": pr.model}
+        return result
 
     def _build_prompt(
         self, user_input: str, template: str, context: Optional[dict] = None,

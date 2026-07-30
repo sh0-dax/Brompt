@@ -56,3 +56,4 @@ class ExecutionResult(BaseModel):
     is_secure: bool
     data: dict[str, Any]
     error_message: str | None = None
+    receipt_hash: str | None = None

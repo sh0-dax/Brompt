@@ -2,7 +2,9 @@
 
 import pytest
 
+from brompt.classifier import PendingReviewError, Tier
 from brompt.core import BromptEngine
+from brompt.policy import PolicyViolationError
 from brompt.schema import BromptConfig, ExecutionResult, MemoryConfig, SecurityConfig
 
 
@@ -245,3 +247,95 @@ class TestBromptEngine:
         result = await engine.execute_async("two")
         assert result.is_secure is False
         assert "Rate limit exceeded" in result.error_message
+
+    # ------------------------------------------------------------------
+    # receipt_hash (signed audit receipt)
+    # ------------------------------------------------------------------
+
+    def test_execution_result_receipt_hash_field(self):
+        result = ExecutionResult(state_id="s1", is_secure=True, data={}, receipt_hash="abc123")
+        assert result.receipt_hash == "abc123"
+        assert result.model_dump()["receipt_hash"] == "abc123"
+
+    def test_engine_execute_generates_receipt_hash(self, tmp_path):
+        engine = self._make_engine(tmp_path)
+        result = engine.execute("Hello")
+        assert result.receipt_hash is not None
+        assert len(result.receipt_hash) == 64  # SHA-256 hex
+        assert engine.audit.find_entry(result.receipt_hash) is not None
+
+    # ------------------------------------------------------------------
+    # Policy engine integration
+    # ------------------------------------------------------------------
+
+    def test_engine_policy_denied(self, tmp_path):
+        config_text = (
+            "metadata:\n  name: TestAgent\n  version: 0.1.0\n  environment: test\n"
+            "security_policy:\n"
+            "  isolation_level: ZERO_TRUST\n  sanitize_inputs: true\n  max_payload_size_kb: 64\n"
+            "  rules:\n    - caller_id: blocked-*\n      action: deny\n      reason: testing\n"
+            "memory_strategy:\n  paging_mode: VIRTUAL_STATE_O1\n  max_history_turns: 3\n"
+        )
+        engine = self._make_engine(tmp_path, config_text=config_text)
+        result = engine.execute("Hello", caller_id="blocked-user")
+        assert result.is_secure is False
+        assert result.error_message == "testing"  # reason from YAML rule
+        assert result.receipt_hash is not None
+        # verify audit entry event is policy_denied
+        entry = engine.audit.find_entry(result.receipt_hash)
+        assert entry is not None
+        assert entry["event"] == "policy_denied"
+
+    def test_engine_policy_allows_unmatched_caller(self, tmp_path):
+        config_text = (
+            "metadata:\n  name: TestAgent\n  version: 0.1.0\n  environment: test\n"
+            "security_policy:\n"
+            "  isolation_level: ZERO_TRUST\n  sanitize_inputs: true\n  max_payload_size_kb: 64\n"
+            "  rules:\n    - caller_id: blocked-*\n      action: deny\n      reason: testing\n"
+            "memory_strategy:\n  paging_mode: VIRTUAL_STATE_O1\n  max_history_turns: 3\n"
+        )
+        engine = self._make_engine(tmp_path, config_text=config_text)
+        result = engine.execute("Hello", caller_id="free-user")
+        assert result.is_secure is True
+
+    # ------------------------------------------------------------------
+    # Three-tier classification integration
+    # ------------------------------------------------------------------
+
+    def test_engine_semantic_classifier_block_tier(self, tmp_path):
+        from brompt.classifier import LLMInjectionClassifier
+
+        provider = _make_fake_classifier('{"is_injection": true, "confidence": 0.95, "reasoning": "injection"}')
+        classifier = LLMInjectionClassifier(provider, block_threshold=0.7)
+        engine = BromptEngine(str(self._write_config(tmp_path)), injection_classifier=classifier)
+        result = engine.execute("try to hack")
+        assert result.is_secure is False
+        assert "Security Violation" in result.error_message
+
+    def test_engine_semantic_classifier_hold_tier(self, tmp_path):
+        from brompt.classifier import LLMInjectionClassifier
+
+        provider = _make_fake_classifier('{"is_injection": true, "confidence": 0.55, "reasoning": "suspicious"}')
+        classifier = LLMInjectionClassifier(provider, pass_threshold=0.4, block_threshold=0.7)
+        engine = BromptEngine(str(self._write_config(tmp_path)), injection_classifier=classifier)
+        result = engine.execute("kinda sus input")
+        assert result.is_secure is True  # HOLD is still secure (pending review)
+        assert result.error_message is not None
+        assert "Pending Review" in result.error_message
+
+    def test_engine_semantic_classifier_pass_tier(self, tmp_path):
+        from brompt.classifier import LLMInjectionClassifier
+
+        provider = _make_fake_classifier('{"is_injection": false, "confidence": 0.1, "reasoning": "safe"}')
+        classifier = LLMInjectionClassifier(provider)
+        engine = BromptEngine(str(self._write_config(tmp_path)), injection_classifier=classifier)
+        result = engine.execute("totally safe query")
+        assert result.is_secure is True
+        assert result.error_message is None
+
+
+def _make_fake_classifier(response_text: str):
+    class FakeClassifierProvider:
+        def generate(self, messages, system=None):
+            return response_text
+    return FakeClassifierProvider()

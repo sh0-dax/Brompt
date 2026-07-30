@@ -12,8 +12,9 @@ import yaml
 
 from ..audit import AuditLog
 from ..circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
-from ..classifier import InjectionClassificationError, InjectionClassifier
+from ..classifier import InjectionClassificationError, InjectionClassifier, PendingReviewError, Tier
 from ..memory import MemoryManager
+from ..policy import PolicyEngine, PolicyViolationError
 from ..providers_core import LLMProvider, ProviderError, build_provider_from_env
 from ..ratelimit import RateLimiter, RateLimiterBackend, RateLimitExceededError
 from ..schema import BromptConfig, ExecutionResult
@@ -71,6 +72,7 @@ class BromptEngine:
         self.async_provider: LLMProvider | None = async_provider
         self.injection_classifier: InjectionClassifier | None = injection_classifier
         self.circuit_breaker: CircuitBreaker | None = circuit_breaker
+        self.policy: PolicyEngine = PolicyEngine.from_manifest(raw_manifest)
         self.audit = AuditLog(
             audit_log_path or str(manifest_file.parent / f"{manifest_file.stem}.audit.log"),
             secret_key=audit_secret_key or os.getenv("BROMPT_AUDIT_SECRET"),
@@ -86,7 +88,9 @@ class BromptEngine:
     def _pre_process(
         self, user_query: str, context: dict[str, Any] | None, caller_id: str
     ) -> tuple[str, dict[str, Any]]:
-        """Rate limit, sanitize, classify, update state, and record the user turn."""
+        """Policy check → rate limit → sanitize → tiered classifier → state."""
+        self.policy.check(caller_id)
+
         self.rate_limiter.check(caller_id)
 
         max_kb = self.config.security_policy.max_payload_size_kb
@@ -94,14 +98,20 @@ class BromptEngine:
 
         if self.injection_classifier is not None:
             try:
-                blocked = self.injection_classifier.is_blocked(clean_query)
+                result = self.injection_classifier.classify_tiered(clean_query)
             except InjectionClassificationError as exc:
                 logger.warning("Injection classifier unavailable, failing open: %s", exc)
-                blocked = None
-            if blocked is not None:
-                raise SecurityViolationError(
-                    f"Security Violation: [Semantic Injection: {blocked.reasoning}]"
-                )
+                result = None
+            if result is not None:
+                if result.tier == Tier.BLOCK:
+                    raise SecurityViolationError(
+                        f"Security Violation: [Semantic Injection: {result.reasoning}]"
+                    )
+                if result.tier == Tier.HOLD:
+                    raise PendingReviewError(
+                        f"Pending Review: [confidence={result.confidence:.2f}, "
+                        f"reasoning={result.reasoning}]"
+                    )
 
         if context:
             for k, v in context.items():
@@ -121,10 +131,16 @@ class BromptEngine:
 
     def _handle_rejection(self, err: Exception) -> ExecutionResult:
         """Maps a pipeline exception to an ExecutionResult and audits it."""
+        is_policy = isinstance(err, PolicyViolationError)
+        is_pending = isinstance(err, PendingReviewError)
         if isinstance(err, RateLimitExceededError):
             event, msg = "rate_limited", str(err)
+        elif is_policy:
+            event, msg = "policy_denied", str(err)
         elif isinstance(err, SecurityViolationError):
             event, msg = "security_violation", str(err)
+        elif is_pending:
+            event, msg = "pending_review", str(err)
         elif isinstance(err, CircuitBreakerOpenError):
             event, msg = "circuit_open", str(err)
         elif isinstance(err, ValueError):
@@ -132,11 +148,12 @@ class BromptEngine:
         else:
             logger.error("Unexpected engine error: %s", err, exc_info=err)
             event, msg = "internal_error", f"Internal engine error: {type(err).__name__}"
-        if event in ("rate_limited", "security_violation"):
+        if event in ("rate_limited", "security_violation", "policy_denied"):
             logger.warning("%s blocked execution: %s", event, err)
-        self.audit.record(event, self.state_id, False, str(err),
-                          latency_ms=0.0, tokens_used=0)
-        return ExecutionResult(state_id=self.state_id, is_secure=False, data={}, error_message=msg)
+        audit_record = self.audit.record(event, self.state_id, is_pending,
+                                         str(err), latency_ms=0.0, tokens_used=0)
+        return ExecutionResult(state_id=self.state_id, is_secure=is_pending,
+                               data={}, error_message=msg, receipt_hash=audit_record.get("entry_hash"))
 
     # -- synchronous path -------------------------------------------------------
 
@@ -193,22 +210,24 @@ class BromptEngine:
                 output_payload["provider_used"] = True
             except (ProviderError, CircuitBreakerOpenError) as err:
                 logger.error("Provider call failed: %s", err)
-                self.audit.record("provider_error", self.state_id, False, str(err),
-                                  latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used)
+                ar = self.audit.record("provider_error", self.state_id, False, str(err),
+                                       latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used)
                 return ExecutionResult(
                     state_id=self.state_id,
                     is_secure=False,
                     data=output_payload,
                     error_message=f"Provider error: {err}",
+                    receipt_hash=ar.get("entry_hash"),
                 )
 
         self._last_completion_tokens = len(reply) // 4 if reply else 0
         self._last_tokens_used = self._last_prompt_tokens + self._last_completion_tokens
         messages_sent = override_messages if override_messages is not None else self.memory.get_history()
-        self.audit.record("execute", self.state_id, True,
-                          latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
-                          messages=messages_sent)
-        return ExecutionResult(state_id=self.state_id, is_secure=True, data=output_payload)
+        ar = self.audit.record("execute", self.state_id, True,
+                               latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
+                               messages=messages_sent)
+        return ExecutionResult(state_id=self.state_id, is_secure=True, data=output_payload,
+                               receipt_hash=ar.get("entry_hash"))
 
 
     # -- asynchronous path --------------------------------------------------
@@ -252,13 +271,14 @@ class BromptEngine:
             self._last_latency_ms = (time.time() - t0) * 1000 if reply else 0.0
         except (ProviderError, CircuitBreakerOpenError) as err:
             logger.error("Provider call failed: %s", err)
-            self.audit.record("provider_error", self.state_id, False, str(err),
-                              latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used)
+            ar = self.audit.record("provider_error", self.state_id, False, str(err),
+                                   latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used)
             return ExecutionResult(
                 state_id=self.state_id,
                 is_secure=False,
                 data=output_payload,
                 error_message=f"Provider error: {err}",
+                receipt_hash=ar.get("entry_hash"),
             )
 
         if reply is not None:
@@ -269,10 +289,11 @@ class BromptEngine:
 
         self._last_completion_tokens = len(reply) // 4 if reply else 0
         self._last_tokens_used = self._last_prompt_tokens + self._last_completion_tokens
-        self.audit.record("execute", self.state_id, True,
-                          latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
-                          messages=history)
-        return ExecutionResult(state_id=self.state_id, is_secure=True, data=output_payload)
+        ar = self.audit.record("execute", self.state_id, True,
+                               latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
+                               messages=history)
+        return ExecutionResult(state_id=self.state_id, is_secure=True, data=output_payload,
+                               receipt_hash=ar.get("entry_hash"))
 
     # -- replay ----------------------------------------------------------------
 

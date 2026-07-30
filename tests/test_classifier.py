@@ -5,6 +5,8 @@ import pytest
 from brompt.classifier import (
     InjectionClassificationError,
     LLMInjectionClassifier,
+    PendingReviewError,
+    Tier,
 )
 from brompt.providers_core import ProviderError
 
@@ -66,3 +68,50 @@ class TestLLMInjectionClassifier:
         result = clf.is_blocked("hmm")
         assert result is not None
         assert result.reasoning == "clear attempt"
+
+    # ------------------------------------------------------------------
+    # Three-tier (PASS / HOLD / BLOCK)
+    # ------------------------------------------------------------------
+
+    def test_tiered_pass_when_not_injection(self):
+        provider = FakeProvider('{"is_injection": false, "confidence": 0.0, "reasoning": "safe"}')
+        clf = LLMInjectionClassifier(provider)
+        result = clf.classify_tiered("hello")
+        assert result.tier == Tier.PASS
+
+    def test_tiered_block_when_high_confidence(self):
+        provider = FakeProvider('{"is_injection": true, "confidence": 0.95, "reasoning": "clear injection"}')
+        clf = LLMInjectionClassifier(provider)
+        result = clf.classify_tiered("drop tables")
+        assert result.tier == Tier.BLOCK
+
+    def test_tiered_hold_when_moderate_confidence(self):
+        provider = FakeProvider('{"is_injection": true, "confidence": 0.55, "reasoning": "suspicious but not certain"}')
+        clf = LLMInjectionClassifier(provider, pass_threshold=0.4, block_threshold=0.7)
+        result = clf.classify_tiered("maybe sus")
+        assert result.tier == Tier.HOLD
+
+    def test_tiered_pass_when_is_injection_but_low_confidence(self):
+        provider = FakeProvider('{"is_injection": true, "confidence": 0.2, "reasoning": "very weak signal"}')
+        clf = LLMInjectionClassifier(provider, pass_threshold=0.4, block_threshold=0.7)
+        result = clf.classify_tiered("barely sus")
+        assert result.tier == Tier.PASS
+
+    def test_tiered_is_blocked_respects_block_threshold(self):
+        provider = FakeProvider('{"is_injection": true, "confidence": 0.6, "reasoning": "medium"}')
+        clf = LLMInjectionClassifier(provider, block_threshold=0.5)
+        result = clf.is_blocked("hmm")
+        assert result is not None
+        assert result.tier == Tier.BLOCK
+
+    def test_tiered_is_blocked_returns_none_on_hold(self):
+        provider = FakeProvider('{"is_injection": true, "confidence": 0.6, "reasoning": "medium"}')
+        clf = LLMInjectionClassifier(provider, pass_threshold=0.4, block_threshold=0.8)
+        result = clf.is_blocked("hmm")
+        assert result is None  # HOLD, not BLOCK
+
+    def test_tiered_backward_compat_confidence_threshold_maps_to_block(self):
+        provider = FakeProvider('{"is_injection": true, "confidence": 0.6, "reasoning": "medium"}')
+        clf = LLMInjectionClassifier(provider, confidence_threshold=0.5)
+        result = clf.classify_tiered("hmm")
+        assert result.tier == Tier.BLOCK
