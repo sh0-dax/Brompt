@@ -693,7 +693,7 @@ class BromptWidget:
             config_path.write_text(new_text, encoding="utf-8")
             self.status_label.configure(text="● saved", fg=GREEN)
         except Exception as exc:
-            self.status_label.configure(text=f"● save error", fg=RED)
+            self.status_label.configure(text=f"● save error: {exc}", fg=RED)
 
     # ------------------------------------------------------------------
     # DOCS.md extraction

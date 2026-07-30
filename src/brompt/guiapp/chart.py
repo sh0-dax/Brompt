@@ -174,14 +174,14 @@ class ChartEngine:
             pts_rej.append((x, y_rej))
 
         if self.chart_type == "line":
-            self._draw_line(c, pts_sec, GREEN, label1)
+            self._draw_line(c, pts_sec, GREEN, label1, top)
             if not is_single:
-                self._draw_line(c, pts_rej, RED, label2)
+                self._draw_line(c, pts_rej, RED, label2, top, legend_x=14 + 70)
 
         elif self.chart_type == "area":
             self._draw_area(c, pts_sec, GREEN, chart_h, top, label1)
             if not is_single:
-                self._draw_area(c, pts_rej, RED, chart_h, top, label2)
+                self._draw_area(c, pts_rej, RED, chart_h, top, label2, legend_x=14 + 70)
 
         elif self.chart_type == "stacked":
             if is_single:
@@ -210,7 +210,7 @@ class ChartEngine:
                 c.create_text(pad + 10 + 70, top - 6, anchor="w", fill=RED,
                               font=("Consolas", 8), text=label2)
 
-    def _draw_line(self, c, pts, color, label):
+    def _draw_line(self, c, pts, color, label, top, legend_x=14):
         points = [v for p in pts for v in p]
         if len(points) >= 4:
             c.create_line(*points, fill=color, width=2, smooth=True)
@@ -221,11 +221,11 @@ class ChartEngine:
             c.create_oval(pts[-1][0] - 2, pts[-1][1] - 2,
                           pts[-1][0] + 2, pts[-1][1] + 2,
                           fill=color, outline="")
-        # Legend
-        c.create_text(14, -4, anchor="w", fill=color,
+        # Legend -- anchored just above the plot area (top - 6)
+        c.create_text(legend_x, top - 6, anchor="w", fill=color,
                       font=("Consolas", 8), text=label)
 
-    def _draw_area(self, c, pts, color, chart_h, top, label=""):
+    def _draw_area(self, c, pts, color, chart_h, top, label="", legend_x=14):
         if not pts:
             return
         bottom = [(pts[-1][0], top + chart_h), (pts[0][0], top + chart_h)]
@@ -236,7 +236,7 @@ class ChartEngine:
         if len(line_pts) >= 4:
             c.create_line(*line_pts, fill=color, width=2, smooth=True)
         if label:
-            c.create_text(14, -4, anchor="w", fill=color,
+            c.create_text(legend_x, top - 6, anchor="w", fill=color,
                           font=("Consolas", 8), text=label)
 
     # ---- Donut ----

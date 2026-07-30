@@ -1,5 +1,6 @@
 """UI construction helpers — tabs, toolbar, title bar, resize grip, keyboard bindings."""
 
+import sys
 import tkinter as tk
 from tkinter import ttk
 
@@ -436,10 +437,19 @@ def build_content_area(parent):
 
 
 def build_resize_grip(parent, root, on_drag_start, on_drag):
-    grip = tk.Label(
-        parent, text="▟", bg=BG, fg=BORDER,
-        font=("Consolas", 10), cursor="size_nw_se",
-    )
+    cursor = "size_nw_se"
+    if sys.platform == "linux":
+        cursor = "bottom_right_corner"
+    try:
+        grip = tk.Label(
+            parent, text="▟", bg=BG, fg=BORDER,
+            font=("Consolas", 10), cursor=cursor,
+        )
+    except tk.TclError:
+        grip = tk.Label(
+            parent, text="▟", bg=BG, fg=BORDER,
+            font=("Consolas", 10),
+        )
     grip.place(relx=1.0, rely=1.0, anchor="se")
     grip.bind("<Button-1>", on_drag_start)
     grip.bind("<B1-Motion>", on_drag)

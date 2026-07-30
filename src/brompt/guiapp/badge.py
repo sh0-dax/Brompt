@@ -79,7 +79,7 @@ class Badge:
     def _make_icon_image():
         img = Image.new("RGB", (16, 16), (88, 166, 255))
         draw = ImageDraw.Draw(img)
-        draw.text((2, -2), "B", fill=(0, 0, 0))
+        draw.text((4, 1), "B", fill=(0, 0, 0))
         return img
 
     # ------------------------------------------------------------------
