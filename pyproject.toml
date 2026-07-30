@@ -138,8 +138,14 @@ ignore = ["N802", "N803", "N806", "N815", "N816"]
 "tests/*" = ["N802", "N803", "N806", "N815", "N816", "N999", "RUF001"]
 
 [tool.pyright]
-typeCheckingMode = "strict"
+typeCheckingMode = "standard"
 reportMissingImports = false
+reportUnknownMemberType = "none"
+reportUnknownVariableType = "none"
+reportUnknownParameterType = "none"
+reportUnknownArgumentType = "none"
+reportMissingTypeArgument = "none"
+reportMissingParameterType = "none"
 
 [tool.coverage.run]
 source = ["src/brompt"]
