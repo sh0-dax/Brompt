@@ -105,8 +105,7 @@ reportMissingImports = false
 source = ["src/brompt"]
 branch = true
 omit = [
-    "src/brompt/_providers_legacy.py",
-    "src/brompt/_cli_legacy.py",
+    "src/brompt/providers_core.py",
     "src/brompt/guiapp/*",
 ]
 

@@ -18,7 +18,7 @@ import json
 import logging
 from typing import Protocol
 
-from ._providers_legacy import LLMProvider, ProviderError
+from .providers_core import LLMProvider, ProviderError
 
 logger = logging.getLogger("brompt.classifier")
 

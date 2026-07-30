@@ -3,7 +3,7 @@
 import time
 from typing import Optional, AsyncIterator
 
-from .base import LLMProvider, ProviderResult, ProviderOutcome
+from .base import LLMProvider, ProviderResult, ProviderOutcome, retry_async_call
 
 
 class OpenAIProvider(LLMProvider):
@@ -23,15 +23,18 @@ class OpenAIProvider(LLMProvider):
     async def generate(self, prompt: str, **kwargs) -> ProviderResult:
         start_time = time.time()
         try:
-            response = await self._client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=kwargs.get("temperature", 0.7),
-                max_tokens=kwargs.get("max_tokens", 2000),
-                top_p=kwargs.get("top_p", 1.0),
-                frequency_penalty=kwargs.get("frequency_penalty", 0.0),
-                presence_penalty=kwargs.get("presence_penalty", 0.0),
-                stop=kwargs.get("stop_sequences") or None,
+            response = await retry_async_call(
+                lambda: self._client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=kwargs.get("temperature", 0.7),
+                    max_tokens=kwargs.get("max_tokens", 2000),
+                    top_p=kwargs.get("top_p", 1.0),
+                    frequency_penalty=kwargs.get("frequency_penalty", 0.0),
+                    presence_penalty=kwargs.get("presence_penalty", 0.0),
+                    stop=kwargs.get("stop_sequences") or None,
+                ),
+                "OpenAI",
             )
             latency_ms = (time.time() - start_time) * 1000
             choice = response.choices[0]

@@ -2,7 +2,7 @@
 
 import pytest
 
-from brompt._providers_legacy import (
+from brompt.providers_core import (
     AnthropicProvider,
     OpenAIProvider,
     OllamaProvider,

@@ -14,7 +14,7 @@ from brompt.core.engine import BromptEngine
 from brompt.hooks import hooks_manager, LoggingHook, TimingHook
 from brompt.observability import metrics
 from brompt.core.template_engine import template_registry
-from brompt._providers_legacy import (
+from brompt.providers_core import (
     AnthropicProvider, OpenAIProvider, GeminiProvider,
     MistralProvider, AzureOpenAIProvider, OllamaProvider, LMStudioProvider,
 )

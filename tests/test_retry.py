@@ -4,7 +4,7 @@ this logic only existed inside GeminiProvider."""
 
 import pytest
 
-from brompt._providers_legacy import _is_rate_limit_error, _retry_async, _retry_sync
+from brompt.providers_core import _is_rate_limit_error, _retry_async, _retry_sync
 
 
 class FakeRateLimitError(Exception):
@@ -45,7 +45,7 @@ class TestRetrySync:
         assert len(calls) == 1
 
     def test_retries_on_rate_limit_then_succeeds(self, monkeypatch):
-        monkeypatch.setattr("brompt._providers_legacy.time.sleep", lambda _: None)
+        monkeypatch.setattr("brompt.providers_core.time.sleep", lambda _: None)
         attempts = {"n": 0}
 
         def call():
@@ -69,7 +69,7 @@ class TestRetrySync:
         assert len(calls) == 1
 
     def test_exhausts_retries_and_raises(self, monkeypatch):
-        monkeypatch.setattr("brompt._providers_legacy.time.sleep", lambda _: None)
+        monkeypatch.setattr("brompt.providers_core.time.sleep", lambda _: None)
 
         def call():
             raise FakeRateLimitError()
@@ -95,7 +95,7 @@ class TestRetryAsync:
         async def fake_sleep(_):
             return None
 
-        monkeypatch.setattr("brompt._providers_legacy.asyncio.sleep", fake_sleep)
+        monkeypatch.setattr("brompt.providers_core.asyncio.sleep", fake_sleep)
         attempts = {"n": 0}
 
         async def call():

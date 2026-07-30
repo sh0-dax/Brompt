@@ -313,7 +313,7 @@ class RedisCache:
         return len(self._local)
 
 
-class BromptWidget:
+class PromptClient:
     def __init__(
         self,
         config: Optional[WidgetConfig] = None,
@@ -388,7 +388,7 @@ class BromptWidget:
             "on_cache_hit": [],
             "on_auto_detect": [],
         }
-        logger.info(f"BromptWidget initialised — model: {self.config.provider.model}")
+        logger.info(f"PromptClient initialised — model: {self.config.provider.model}")
 
     def _setup_logging(self):
         logging.basicConfig(
@@ -705,9 +705,15 @@ class BromptWidget:
     def __repr__(self) -> str:
         cache_hit = self._cache.hit_rate if hasattr(self._cache, 'hit_rate') and self._cache else 0
         return (
-            f"BromptWidget(model='{self.config.provider.model}', "
+            f"PromptClient(model='{self.config.provider.model}', "
             f"sessions={self._sessions.get_total_sessions()}, "
             f"cache={len(self._cache) if self._cache else 0}, "
             f"saved_tokens={self._total_saved_tokens}, "
             f"opt={self._token_optimization_enabled})"
         )
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible alias
+# ---------------------------------------------------------------------------
+BromptWidget = PromptClient

@@ -14,7 +14,7 @@ import os
 import pytest
 
 from brompt.core import BromptEngine
-from brompt._providers_legacy import GeminiProvider, OllamaProvider, OpenAIProvider
+from brompt.providers_core import GeminiProvider, OllamaProvider, OpenAIProvider
 
 
 def _ollama_available() -> bool:

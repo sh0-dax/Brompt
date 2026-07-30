@@ -13,7 +13,7 @@ from ..audit import AuditLog
 from ..circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from ..classifier import InjectionClassificationError, InjectionClassifier
 from ..memory import MemoryManager
-from .._providers_legacy import LLMProvider, ProviderError, build_provider_from_env
+from ..providers_core import LLMProvider, ProviderError, build_provider_from_env
 from ..ratelimit import RateLimiter, RateLimiterBackend, RateLimitExceededError
 from ..schema import BromptConfig, ExecutionResult
 from ..security import SecurityEngine, SecurityViolationError

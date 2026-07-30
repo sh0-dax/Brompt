@@ -24,7 +24,7 @@ from modern_ui import (
 )
 
 from brompt.config import WidgetConfig, ProviderConfig, ProviderType
-from brompt.widget import BromptWidget
+from brompt.widget import PromptClient
 from brompt.pricing import estimate_cost
 from brompt.optimizer import TokenOptimizer
 
@@ -118,7 +118,7 @@ def init_widget(provider_name: str, api_key: str, model: str):
     cfg = WidgetConfig(
         provider=ProviderConfig(type=ptype, model=model, api_key=resolved_key),
     )
-    return BromptWidget(
+    return PromptClient(
         config=cfg,
         enable_token_optimization=st.session_state.optimization_enabled,
         enable_cache=True,

@@ -15,7 +15,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from brompt._providers_legacy import GeminiProvider
+from brompt.providers_core import GeminiProvider
 from brompt.core import BromptEngine
 from brompt.pricing import estimate_cost
 

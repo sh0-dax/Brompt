@@ -3,7 +3,7 @@
 __version__ = "2.0.0"
 __author__ = "Brompt Team"
 
-from .widget import BromptWidget, PromptResult
+from .widget import PromptClient, PromptResult
 from .config import (
     WidgetConfig, ProviderConfig, GenerationConfig, CacheConfig,
     FeedbackConfig, SessionConfig, ProviderType, LogLevel,

@@ -238,8 +238,7 @@ Brompt/
 ├── src/
 │   └── brompt/
 │       ├── __init__.py               # Package root — exports all public API
-│       ├── _cli_legacy.py            # Legacy TUI (preserved for compatibility)
-│       ├── _providers_legacy.py      # Legacy provider system (sync)
+│       ├── providers_core.py         # Core provider integrations (sync)
 │       ├── schema.py                 # Data Models & System Schemas
 │       ├── security.py               # Ingress filtering + output redaction
 │       ├── memory.py                 # Bounded turn history + session state (Thread-Safe)
@@ -640,7 +639,7 @@ Enable the LLM classifier for production deployments where security is critical:
 
 ```python
 from brompt.classifier import LLMInjectionClassifier
-from brompt._providers_legacy import build_provider_from_env
+from brompt.providers_core import build_provider_from_env
 
 provider = build_provider_from_env()
 classifier = LLMInjectionClassifier(provider, confidence_threshold=0.7)

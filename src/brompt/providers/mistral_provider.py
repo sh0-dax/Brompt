@@ -3,7 +3,7 @@
 import time
 from typing import Optional, AsyncIterator
 
-from .base import LLMProvider, ProviderResult, ProviderOutcome
+from .base import LLMProvider, ProviderResult, ProviderOutcome, retry_async_call
 
 
 class MistralProvider(LLMProvider):
@@ -23,12 +23,15 @@ class MistralProvider(LLMProvider):
             system = kwargs.get("system")
             if system:
                 msgs.insert(0, {"role": "system", "content": system})
-            response = await self._client.chat.complete_async(
-                model=self.model,
-                messages=msgs,
-                temperature=kwargs.get("temperature", 0.7),
-                max_tokens=kwargs.get("max_tokens", 4096),
-                top_p=kwargs.get("top_p", 1.0),
+            response = await retry_async_call(
+                lambda: self._client.chat.complete_async(
+                    model=self.model,
+                    messages=msgs,
+                    temperature=kwargs.get("temperature", 0.7),
+                    max_tokens=kwargs.get("max_tokens", 4096),
+                    top_p=kwargs.get("top_p", 1.0),
+                ),
+                "Mistral",
             )
             latency_ms = (time.time() - start_time) * 1000
             choice = response.choices[0]

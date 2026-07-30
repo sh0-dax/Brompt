@@ -3,7 +3,7 @@
 import time
 from typing import Optional, AsyncIterator
 
-from .base import LLMProvider, ProviderResult, ProviderOutcome
+from .base import LLMProvider, ProviderResult, ProviderOutcome, retry_async_call
 
 
 class GoogleProvider(LLMProvider):
@@ -29,19 +29,25 @@ class GoogleProvider(LLMProvider):
             }
             system = kwargs.get("system")
             if system:
-                response = await self._client.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
-                    config=self._types.GenerateContentConfig(
-                        system_instruction=system,
-                        temperature=config["temperature"],
-                        max_output_tokens=config["max_output_tokens"],
+                response = await retry_async_call(
+                    lambda: self._client.models.generate_content(
+                        model=self.model,
+                        contents=prompt,
+                        config=self._types.GenerateContentConfig(
+                            system_instruction=system,
+                            temperature=config["temperature"],
+                            max_output_tokens=config["max_output_tokens"],
+                        ),
                     ),
+                    "Google",
                 )
             else:
-                response = await self._client.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
+                response = await retry_async_call(
+                    lambda: self._client.models.generate_content(
+                        model=self.model,
+                        contents=prompt,
+                    ),
+                    "Google",
                 )
             latency_ms = (time.time() - start_time) * 1000
             text = response.text or ""

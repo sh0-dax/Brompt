@@ -3,7 +3,7 @@
 import time
 from typing import Optional, AsyncIterator
 
-from .base import LLMProvider, ProviderResult, ProviderOutcome
+from .base import LLMProvider, ProviderResult, ProviderOutcome, retry_async_call
 
 
 class AnthropicProvider(LLMProvider):
@@ -19,11 +19,14 @@ class AnthropicProvider(LLMProvider):
     async def generate(self, prompt: str, **kwargs) -> ProviderResult:
         start_time = time.time()
         try:
-            response = await self._client.messages.create(
-                model=self.model,
-                max_tokens=kwargs.get("max_tokens", 2000),
-                temperature=kwargs.get("temperature", 0.7),
-                messages=[{"role": "user", "content": prompt}],
+            response = await retry_async_call(
+                lambda: self._client.messages.create(
+                    model=self.model,
+                    max_tokens=kwargs.get("max_tokens", 2000),
+                    temperature=kwargs.get("temperature", 0.7),
+                    messages=[{"role": "user", "content": prompt}],
+                ),
+                "Anthropic",
             )
             latency_ms = (time.time() - start_time) * 1000
             return ProviderResult(

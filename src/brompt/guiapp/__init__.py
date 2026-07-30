@@ -14,6 +14,12 @@ import tkinter.filedialog as tkfiledialog
 import tkinter.messagebox as tkmessagebox
 from pathlib import Path
 
+try:
+    import yaml
+    _YAML_AVAILABLE = True
+except ImportError:
+    _YAML_AVAILABLE = False
+
 from .badge import Badge
 from .chart import ChartEngine
 from .theme import (
@@ -32,8 +38,8 @@ from .ui import (
     DOCS_TEXT,
 )
 
-from brompt.widget import BromptWidget as BackendPromptWidget
-from brompt._providers_legacy import (
+from brompt.widget import PromptClient as BackendPromptWidget
+from brompt.providers_core import (
     AnthropicProvider,
     OpenAIProvider,
     GeminiProvider,
@@ -68,6 +74,20 @@ def _fmt_short_cost(c: float) -> str:
     if c > 0:
         return f"${c:.6f}"
     return "$0.00"
+
+
+def _resolve_config_path() -> Path:
+    """Search cwd and repo root for ``agent.brompt.yaml``.
+
+    Returns the first existing file found, or a default path under
+    ``Path.cwd()`` if none exists yet.
+    """
+    candidates = [Path.cwd(), Path(__file__).resolve().parent.parent.parent.parent]
+    for base in candidates:
+        p = base / "agent.brompt.yaml"
+        if p.exists():
+            return p
+    return Path.cwd() / "agent.brompt.yaml"
 
 
 class BromptWidget:
@@ -406,16 +426,9 @@ class BromptWidget:
         try:
             from brompt.core.engine import BromptEngine
 
-            candidates = [Path.cwd(), Path(__file__).resolve().parent.parent.parent.parent]
-            config_path = None
-            for base in candidates:
-                p = base / "agent.brompt.yaml"
-                if p.exists():
-                    config_path = str(p)
-                    break
-            if not config_path:
-                default = Path.cwd() / "agent.brompt.yaml"
-                default.write_text(
+            config_path = _resolve_config_path()
+            if not config_path.exists():
+                config_path.write_text(
                     "metadata:\n"
                     "  name: DefaultAgent\n"
                     "  version: 0.1.0-alpha\n"
@@ -432,8 +445,7 @@ class BromptWidget:
                     "  window_seconds: 60\n",
                     encoding="utf-8",
                 )
-                config_path = str(default)
-            self.engine = BromptEngine(config_path, provider=None)
+            self.engine = BromptEngine(str(config_path), provider=None)
             self.status_label.configure(text="● connected", fg=GREEN)
         except Exception:
             self.status_label.configure(text="● error", fg=RED)
@@ -660,15 +672,7 @@ class BromptWidget:
     # ------------------------------------------------------------------
 
     def _load_config_into_editor(self):
-        candidates = [Path.cwd(), Path(__file__).resolve().parent.parent.parent.parent]
-        config_path = None
-        for base in candidates:
-            p = base / "agent.brompt.yaml"
-            if p.exists():
-                config_path = p
-                break
-        if config_path is None:
-            config_path = Path.cwd() / "agent.brompt.yaml"
+        config_path = _resolve_config_path()
         try:
             text = config_path.read_text(encoding="utf-8")
             c = self.content
@@ -679,15 +683,15 @@ class BromptWidget:
 
     def _save_config(self):
         new_text = self.content["config_text"].get("1.0", tk.END).strip()
-        candidates = [Path.cwd(), Path(__file__).resolve().parent.parent.parent.parent]
-        config_path = None
-        for base in candidates:
-            p = base / "agent.brompt.yaml"
-            if p.exists():
-                config_path = p
-                break
-        if not config_path:
-            config_path = Path.cwd() / "agent.brompt.yaml"
+        config_path = _resolve_config_path()
+
+        # Validate YAML before overwriting
+        if _YAML_AVAILABLE:
+            try:
+                yaml.safe_load(new_text)
+            except Exception as exc:
+                self.status_label.configure(text=f"● invalid YAML: {exc}", fg=RED)
+                return
 
         try:
             config_path.write_text(new_text, encoding="utf-8")
