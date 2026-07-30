@@ -2,6 +2,7 @@
 
 import abc
 import logging
+import re
 import time
 from typing import Any
 
@@ -42,12 +43,18 @@ class HooksManager:
 
     def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:  # noqa: E501
         for hook in self._hooks:
-            user_query, context = hook.before_execute(user_query, context, **kwargs)
+            try:
+                user_query, context = hook.before_execute(user_query, context, **kwargs)
+            except Exception:
+                logger.exception("Hook %s.before_execute failed — skipping", type(hook).__name__)
         return user_query, context
 
     def after_execute(self, result: ExecutionResult, **kwargs) -> ExecutionResult:
         for hook in reversed(self._hooks):
-            result = hook.after_execute(result, **kwargs)
+            try:
+                result = hook.after_execute(result, **kwargs)
+            except Exception:
+                logger.exception("Hook %s.after_execute failed — skipping", type(hook).__name__)
         return result
 
 
@@ -114,20 +121,68 @@ class AuditHook(BaseHook):
         return result
 
 
+class RateLimitBackend(abc.ABC):
+    """Abstract rate-limit state backend (in-memory or distributed)."""
+
+    @abc.abstractmethod
+    def check(self, key: str, max_calls: int, window: float) -> bool:
+        """Return True if the call is allowed, False if rate-limited."""
+
+
+class InMemoryRateLimitBackend(RateLimitBackend):
+    """Per-process in-memory rate-limit state."""
+
+    def __init__(self):
+        self._data: dict[str, list[float]] = {}
+
+    def check(self, key: str, max_calls: int, window: float) -> bool:
+        now = time.time()
+        timestamps = self._data.setdefault(key, [])
+        timestamps[:] = [t for t in timestamps if now - t <= window]
+        if len(timestamps) >= max_calls:
+            return False
+        timestamps.append(now)
+        return True
+
+
+class RedisRateLimitBackend(RateLimitBackend):
+    """Distributed rate-limit backed by Redis sorted sets."""
+
+    def __init__(self, redis_client=None, redis_url: str | None = None):
+        if redis_client is not None:
+            self._redis = redis_client
+        elif redis_url is not None:
+            import redis as redis_mod
+            self._redis = redis_mod.from_url(redis_url)
+        else:
+            raise ValueError("Provide either redis_client or redis_url")
+
+    def check(self, key: str, max_calls: int, window: float) -> bool:
+        now = time.time()
+        cutoff = now - window
+        pipe = self._redis.pipeline()
+        pipe.zremrangebyscore(key, 0, cutoff)
+        pipe.zcard(key)
+        count = pipe.execute()[1] or 0
+        if count >= max_calls:
+            return False
+        self._redis.zadd(key, {str(now): now})
+        self._redis.expire(key, int(window) + 1)
+        return True
+
+
 class RateLimitHook(BaseHook):
     """Enforces rate limiting at the hook level."""
 
-    def __init__(self, max_calls: int = 60, window_seconds: float = 60.0):
+    def __init__(self, max_calls: int = 60, window_seconds: float = 60.0, key: str = "default", backend: RateLimitBackend | None = None):  # noqa: E501
         self.max_calls = max_calls
         self.window_seconds = window_seconds
-        self._timestamps: list[float] = []
+        self.key = key
+        self._backend = backend or InMemoryRateLimitBackend()
 
     def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:  # noqa: E501
-        now = time.time()
-        self._timestamps = [t for t in self._timestamps if now - t <= self.window_seconds]
-        if len(self._timestamps) >= self.max_calls:
+        if not self._backend.check(self.key, self.max_calls, self.window_seconds):
             raise RuntimeError(f"Rate limit exceeded: {self.max_calls} calls per {self.window_seconds}s")
-        self._timestamps.append(now)
         return user_query, context
 
     def after_execute(self, result: ExecutionResult, **kwargs) -> ExecutionResult:
@@ -143,11 +198,11 @@ class SecurityHook(BaseHook):
             "ignore previous instructions",
             "system prompt:",
         ]
+        self._patterns = [re.compile(re.escape(p), re.IGNORECASE) for p in self._blocked_patterns]
 
     def before_execute(self, user_query: str, context: dict[str, Any] | None, **kwargs) -> tuple[str, dict[str, Any] | None]:  # noqa: E501
-        query_lower = user_query.lower()
-        for pattern in self._blocked_patterns:
-            if pattern in query_lower:
+        for pattern, compiled in zip(self._blocked_patterns, self._patterns):
+            if compiled.search(user_query):
                 from .security import SecurityViolationError
                 raise SecurityViolationError(f"Blocked pattern detected: '{pattern}'")
         return user_query, context

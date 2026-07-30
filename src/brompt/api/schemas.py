@@ -32,12 +32,23 @@ class RecordFeedbackRequest(BaseModel):
     model_name: Optional[str] = None
 
 
+class ExecutionData(BaseModel):
+    """Typed payload returned inside ``GeneratedPromptResponse.data``."""
+    llm_response: Optional[str] = None
+    processed_input: Optional[str] = None
+    tokens_used: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    plain_prompt_tokens: int = 0
+    model: Optional[str] = None
+
+
 class GeneratedPromptResponse(BaseModel):
     """Response returned after generating a prompt."""
     template_id: str
     is_secure: bool
     state_id: str
-    data: dict
+    data: ExecutionData
     error_message: Optional[str] = None
     latency_ms: Optional[float] = None
 
