@@ -8,6 +8,8 @@ import pytest
 from brompt import (
     BudgetExceededError,
     ComplianceConfig,
+    ComplianceError,
+    HumanApprovalRequired,
     PromptClient,
     TamperDetectedError,
 )
@@ -340,3 +342,175 @@ class TestSchema:
         )
         assert stamped.audit_hash == "abc"
         assert stamped.receipt_hash is None  # legacy field untouched
+
+
+class TestBudgetConfigUnit:
+    def test_check_budget_daily_and_per_request(self):
+        b = BudgetConfig(max_daily_cost=10.0, max_per_request=2.0)
+        assert b.check_budget(1.0) is True
+        assert b.check_budget(3.0) is False  # per-request cap
+        b.daily_spent = 9.5
+        assert b.check_budget(1.0) is False  # daily cap
+
+    def test_add_cost_tracks_ledger(self):
+        b = BudgetConfig()
+        b.add_cost(0.5)
+        b.add_cost(1.0)
+        assert b.daily_spent == 1.5
+        assert b.request_count == 2
+
+    def test_alert_level_bands(self):
+        b = BudgetConfig(max_daily_cost=100.0, alert_threshold=0.8)
+        assert b.get_alert_level() == "normal"
+        b.daily_spent = 85.0
+        assert b.get_alert_level() == "warning"
+        b.daily_spent = 100.0
+        assert b.get_alert_level() == "exceeded"
+
+    def test_to_dict_for_reporting(self):
+        b = BudgetConfig(max_daily_cost=50.0)
+        b.add_cost(40.0)
+        snapshot = b.to_dict()
+        assert snapshot["alert_level"] == "warning"
+        assert snapshot["request_count"] == 1
+
+
+class TestHumanReviewRaiseMode:
+    async def test_raise_mode_raises_with_approval_id(self, tmp_path, client_factory):
+        compliance = ComplianceConfig(
+            enabled=True,
+            signing_key="k",
+            human_review_patterns=["transfer"],
+            human_review_action="raise",
+        )
+        client = client_factory(compliance, audit_path=str(tmp_path / "a.log"))
+
+        with pytest.raises(HumanApprovalRequired, match="approval"):
+            await client.prompt("transfer funds now")
+
+    async def test_raise_mode_approve_then_works(self, tmp_path, client_factory):
+        compliance = ComplianceConfig(
+            enabled=True,
+            signing_key="k",
+            human_review_patterns=["transfer"],
+            human_review_action="raise",
+        )
+        client = client_factory(compliance, audit_path=str(tmp_path / "a.log"))
+
+        with pytest.raises(HumanApprovalRequired) as exc_info:
+            await client.prompt("transfer funds now")
+
+        approval_id = str(exc_info.value).split("(ID: ")[1].rstrip(")")
+        assert approval_id in client._pending_approvals
+
+        approved = await client.approve(approval_id, approver="admin")
+        assert approved.response == "Fake response"
+        assert len(client._pending_approvals) == 0
+
+    def test_invalid_action_rejected(self):
+        with pytest.raises(ValueError):
+            ComplianceConfig(enabled=True, signing_key="k", human_review_action="ignore")
+
+
+class TestDataResidency:
+    async def test_result_stamped_with_residency(self, tmp_path, client_factory):
+        compliance = ComplianceConfig(
+            enabled=True, signing_key="k", data_residency="eu",
+        )
+        client = client_factory(compliance, audit_path=str(tmp_path / "a.log"))
+
+        result = await client.prompt("Hello")
+        assert result.data_residency == "eu"
+        assert result.to_dict()["data_residency"] == "eu"
+
+    def test_parsed_from_yaml(self, tmp_path):
+        yaml_path = tmp_path / "policy.yaml"
+        yaml_path.write_text(
+            "provider:\n"
+            "  type: local\n"
+            "  model: fake-model\n"
+            "compliance:\n"
+            "  enabled: true\n"
+            "  signing_key: k\n"
+            "  data_residency: mena\n"
+            "  human_review_action: raise\n",
+            encoding="utf-8",
+        )
+        cfg = WidgetConfig.from_yaml(yaml_path)
+        assert cfg.compliance.data_residency == "mena"
+        assert cfg.compliance.human_review_action == "raise"
+
+
+class TestSignedProof:
+    async def test_signed_at_and_to_audit_dict(self, tmp_path, client_factory):
+        compliance = ComplianceConfig(
+            enabled=True, signing_key="k", data_residency="eu",
+            human_review_patterns=["transfer"],
+        )
+        client = client_factory(compliance, audit_path=str(tmp_path / "a.log"))
+
+        result = await client.prompt("Normal request")
+        assert result.signed_at is not None
+        assert result.tamper_check is True
+
+        audit = result.to_audit_dict()
+        assert audit["execution_id"] == result.execution_id
+        assert audit["audit_hash"] == result.audit_hash
+        assert audit["tamper_check"] is True
+        assert audit["data_residency"] == "eu"
+        assert audit["model"] == result.model
+        assert audit["signed_at"] is not None
+
+    async def test_pending_result_not_signed(self, tmp_path, client_factory):
+        compliance = ComplianceConfig(
+            enabled=True, signing_key="k", human_review_patterns=["transfer"],
+        )
+        client = client_factory(compliance, audit_path=str(tmp_path / "a.log"))
+
+        pending = await client.prompt("transfer funds now")
+        assert pending.signed_at is None
+        assert pending.audit_hash is None
+        assert pending.to_audit_dict()["needs_approval"] is True
+
+
+class TestComplianceReport:
+    async def test_report_keys_and_integrity(self, tmp_path, client_factory):
+        compliance = ComplianceConfig(
+            enabled=True, signing_key="k", data_residency="us",
+            budget=BudgetConfig(max_daily_cost=50.0),
+        )
+        client = client_factory(compliance, audit_path=str(tmp_path / "a.log"))
+
+        await client.prompt("Hello")
+        report = client.get_compliance_report()
+
+        assert report["compliance_enabled"] is True
+        assert report["mode"] == "standard"
+        assert report["data_residency"] == "us"
+        assert report["chain_integrity"] is True
+        assert report["signed_entries"] is True
+        assert report["total_entries"] >= 1
+        assert report["budget"]["alert_level"] == "normal"
+        assert report["pending_approvals"] == 0
+        assert report["human_review_action"] == "return"
+
+    async def test_report_without_compliance(self, client_factory):
+        client = client_factory()
+        report = client.get_compliance_report()
+        assert report["compliance_enabled"] is False
+        assert report["chain_integrity"] is None
+        assert report["budget"] is None
+
+    async def test_exceptions_share_base(self, tmp_path, client_factory):
+        compliance = ComplianceConfig(
+            enabled=True, signing_key="k",
+            budget=BudgetConfig(max_daily_cost=1.0, max_per_request=1.0),
+        )
+        client = client_factory(compliance, audit_path=str(tmp_path / "a.log"))
+        client._daily_spent = 1.0
+
+        assert issubclass(BudgetExceededError, ComplianceError)
+        assert issubclass(TamperDetectedError, ComplianceError)
+        assert issubclass(HumanApprovalRequired, ComplianceError)
+        with pytest.raises(ComplianceError):
+            await client.prompt("Blocked by budget")

@@ -36,15 +36,19 @@ except ImportError:
     _auto_detect_module = None
 
 
-class TamperDetectedError(Exception):
+class ComplianceError(Exception):
+    """Base class for all compliance-related errors."""
+
+
+class TamperDetectedError(ComplianceError):
     """Raised when the audit chain or a recorded entry has been tampered with."""
 
 
-class BudgetExceededError(Exception):
+class BudgetExceededError(ComplianceError):
     """Raised when a request would exceed the configured cost budget."""
 
 
-class HumanApprovalRequired(Exception):
+class HumanApprovalRequired(ComplianceError):
     """Raised when a request requires human approval (human-in-the-loop)."""
 
 
@@ -89,9 +93,11 @@ class PromptResult:
     tamper_check: Optional[bool] = None
     policy_id: Optional[str] = None
     compliance_mode: Optional[str] = None
+    data_residency: Optional[str] = None
     needs_approval: bool = False
     approval_id: Optional[str] = None
     error_message: Optional[str] = None
+    signed_at: Optional[datetime] = None
     metadata: dict = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
 
@@ -126,11 +132,31 @@ class PromptResult:
             "tamper_check": self.tamper_check,
             "policy_id": self.policy_id,
             "compliance_mode": self.compliance_mode,
+            "data_residency": self.data_residency,
             "needs_approval": self.needs_approval,
             "approval_id": self.approval_id,
             "error_message": self.error_message,
+            "signed_at": self.signed_at.isoformat() if self.signed_at else None,
             "metadata": self.metadata,
             "timestamp": self.timestamp.isoformat(),
+        }
+
+    def to_audit_dict(self) -> dict:
+        """Audit-relevant subset for external attestation/receipts."""
+        return {
+            "execution_id": self.execution_id,
+            "audit_hash": self.audit_hash,
+            "audit_chain_id": self.audit_chain_id,
+            "tamper_check": self.tamper_check,
+            "policy_id": self.policy_id,
+            "compliance_mode": self.compliance_mode,
+            "data_residency": self.data_residency,
+            "needs_approval": self.needs_approval,
+            "approval_id": self.approval_id,
+            "model": self.model,
+            "tokens_used": self.tokens_used,
+            "cost": round(self.cost, 6),
+            "signed_at": self.signed_at.isoformat() if self.signed_at else None,
         }
 
     @classmethod
@@ -384,8 +410,6 @@ class PromptClient:
             self._policy = PolicyEngine(rules=[PolicyRule.from_dict(r) for r in rules])
 
         self._budget = self._compliance.budget if self._compliance.enabled else None
-        self._daily_spent = 0.0
-        self._request_count = 0
         self._pending_approvals: dict[str, dict] = {}
         self._air_gapped = self._compliance.enabled and self._compliance.mode == "air_gapped"
 
@@ -499,10 +523,15 @@ class PromptClient:
             self._check_budget_preflight(user_input)
 
         if not _skip_approval and self._is_sensitive(user_input):
-            return self._request_human_approval(
+            pending = self._request_human_approval(
                 user_input, template, session_id, context, system_prompt,
                 caller_id, execution_id, generation_kwargs,
             )
+            if self._compliance.human_review_action == "raise":
+                raise HumanApprovalRequired(
+                    f"Human approval required (ID: {pending.approval_id})"
+                )
+            return pending
 
         detection = None
         try:
@@ -600,6 +629,7 @@ class PromptClient:
             )
             result.execution_id = execution_id
             result.compliance_mode = self._compliance.mode
+            result.data_residency = self._compliance.data_residency
             if self._policy is not None:
                 result.policy_id = caller_id
             self._attach_proof(
@@ -837,6 +867,7 @@ class PromptClient:
         )
         if self._policy is not None:
             result.policy_id = caller_id
+        result.data_residency = self._compliance.data_residency
         self._attach_proof(result, new_execution_id, "replay", latency_ms,
                            provider_result.tokens_used, prompt_text, 0.0)
         return result
@@ -865,6 +896,21 @@ class PromptClient:
             }
             for e in self._audit.read_all()
         ]
+
+    def get_compliance_report(self) -> dict:
+        """High-level compliance snapshot for dashboards / external auditors."""
+        return {
+            "compliance_enabled": self._compliance.enabled,
+            "mode": self._compliance.mode,
+            "data_residency": self._compliance.data_residency or "global",
+            "chain_integrity": self._audit.verify() if self._audit else None,
+            "signed_entries": self._audit.is_signed if self._audit else False,
+            "total_entries": len(self._audit.read_all()) if self._audit else 0,
+            "budget": self._budget.to_dict() if self._budget is not None else None,
+            "pending_approvals": len(self._pending_approvals),
+            "policy_rules": len(self._compliance.policy_rules),
+            "human_review_action": self._compliance.human_review_action,
+        }
 
     async def approve(self, approval_id: str, approver: str = "admin") -> PromptResult:
         """Approve a pending sensitive request and execute it.
@@ -925,6 +971,7 @@ class PromptClient:
         result.audit_hash = entry_hash
         result.audit_chain_id = entry.get("prev_hash") if entry else None
         result.tamper_check = self._audit.verify()
+        result.signed_at = datetime.now()
 
     def _is_sensitive(self, text: str) -> bool:
         if not self._compliance.human_review_patterns:
@@ -963,14 +1010,16 @@ class PromptClient:
             approval_id=approval_id,
             error_message=f"Human approval required (ID: {approval_id})",
             compliance_mode=self._compliance.mode,
+            data_residency=self._compliance.data_residency,
         )
 
     def _check_budget_preflight(self, user_input: str) -> None:
-        if self._daily_spent >= self._budget.max_daily_cost:
+        if self._budget.daily_spent >= self._budget.max_daily_cost:
             self._record_event("budget_exceeded", uuid.uuid4().hex[:16], False,
-                               user_input, detail=f"daily_spent={self._daily_spent:.4f}")
+                               user_input,
+                               detail=f"daily_spent={self._budget.daily_spent:.4f}")
             raise BudgetExceededError(
-                f"Daily budget exceeded: ${self._daily_spent:.4f} >= ${self._budget.max_daily_cost}"
+                f"Daily budget exceeded: ${self._budget.daily_spent:.4f} >= ${self._budget.max_daily_cost}"
             )
         estimate = estimate_cost(
             self._provider.__class__.__name__,
@@ -984,12 +1033,11 @@ class PromptClient:
             )
 
     def _update_budget(self, cost: float, execution_id: str, content: str) -> None:
-        self._daily_spent += cost
-        self._request_count += 1
-        if self._daily_spent >= self._budget.max_daily_cost * self._budget.alert_threshold:
+        self._budget.add_cost(cost)
+        if self._budget.get_alert_level() == "warning":
             self._record_event(
                 "budget_warning", execution_id, True, content,
-                detail=f"daily_spent={self._daily_spent:.4f}",
+                detail=f"daily_spent={self._budget.daily_spent:.4f}",
             )
 
     def _verify_air_gapped(self) -> None:
@@ -1007,6 +1055,26 @@ class PromptClient:
     def audit_log(self) -> Optional[AuditLog]:
         """The bound audit log (``None`` when compliance is disabled)."""
         return self._audit
+
+    @property
+    def _daily_spent(self) -> float:
+        """Backward-compatible accessor for the in-process budget ledger."""
+        return self._budget.daily_spent if self._budget is not None else 0.0
+
+    @_daily_spent.setter
+    def _daily_spent(self, value: float) -> None:
+        if self._budget is not None:
+            self._budget.daily_spent = value
+
+    @property
+    def _request_count(self) -> int:
+        """Backward-compatible accessor for the in-process request counter."""
+        return self._budget.request_count if self._budget is not None else 0
+
+    @_request_count.setter
+    def _request_count(self, value: int) -> None:
+        if self._budget is not None:
+            self._budget.request_count = value
 
     def _build_prompt(
         self, user_input: str, template: str, context: Optional[dict] = None,

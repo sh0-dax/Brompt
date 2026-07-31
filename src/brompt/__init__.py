@@ -53,7 +53,7 @@ from .ratelimit import RateLimiter, RateLimiterBackend, RateLimitExceededError, 
 from .router import ComplexityLevel, ModelRouter, RoutingStrategy
 from .security import SecurityEngine, SecurityViolationError
 from .session import Message, Session, SessionManager
-from .widget import BudgetExceededError, HumanApprovalRequired, PromptClient, PromptResult, TamperDetectedError
+from .widget import BudgetExceededError, ComplianceError, HumanApprovalRequired, PromptClient, PromptResult, TamperDetectedError
 
 try:
     from .feedback import FeedbackLoop, PromptOutcome
@@ -77,6 +77,7 @@ __all__ = [
     "ClassificationResult",
     "ComplexityLevel",
     "ComplianceConfig",
+    "ComplianceError",
     "FeedbackConfig",
     "GenerationConfig",
     "GoogleProvider",

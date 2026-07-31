@@ -652,6 +652,15 @@ for entry in client.export_audit_trail():
 
 Compliance gates, in order: policy-as-code (deny rules by `caller_id`), air-gap probe (raises in `air_gapped` mode when outbound connectivity is detected), budget preflight (raises `BudgetExceededError`), then human review for sensitive patterns (`needs_approval` with `approve()` / `reject()`). Every gate, provider failure, approval, and rejection is itself audit-logged, so the trail covers both allowed and blocked executions.
 
+Additional compliance affordances:
+
+- **`human_review_action`** — set `"raise"` to have sensitive prompts raise `HumanApprovalRequired` (carrying the approval ID) instead of returning a pending result; the request stays in `_pending_approvals` until `approve()`/`reject()`.
+- **`data_residency`** — optional region tag (`"eu"`, `"us"`, `"mena"`, ...) validated nowhere but stamped on every `PromptResult` and included in `to_audit_dict()` for GDPR/regional governance.
+- **`signed_at` / `to_audit_dict()`** — every executed `PromptResult` records when its proof was signed; `result.to_audit_dict()` returns the audit-relevant subset (`execution_id`, `audit_hash`, `audit_chain_id`, `tamper_check`, `policy_id`, `compliance_mode`, `data_residency`, `needs_approval`, `model`, `tokens_used`, `cost`, `signed_at`).
+- **`get_compliance_report()`** — one-shot compliance snapshot: mode, `data_residency`, `chain_integrity`, signed/total entries, budget ledger (`to_dict()`), pending approvals, rule count, and the review action in effect.
+- **`BudgetConfig`** — owns the in-process ledger (`daily_spent`, `request_count`) with `check_budget()`, `add_cost()`, `get_alert_level()` and `to_dict()`; budget enforcement remains in-process only (see Roadmap).
+- All compliance errors (`BudgetExceededError`, `TamperDetectedError`, `HumanApprovalRequired`) share the `ComplianceError` base class.
+
 ### Template Engine
 
 ```python

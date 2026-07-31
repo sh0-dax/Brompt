@@ -118,11 +118,51 @@ class BudgetConfig:
     alert_threshold: float = 0.8
     enabled: bool = True
 
+    daily_spent: float = 0.0
+    request_count: int = 0
+
     def __post_init__(self):
         if self.max_daily_cost <= 0:
             raise ValueError("max_daily_cost must be > 0")
         if self.max_per_request <= 0:
             raise ValueError("max_per_request must be > 0")
+        if not 0 < self.alert_threshold <= 1:
+            raise ValueError("alert_threshold must be in (0, 1]")
+
+    def check_budget(self, estimated_cost: float = 0.0) -> bool:
+        """``False`` when the request would exceed the daily or per-request cap."""
+        if self.daily_spent + estimated_cost > self.max_daily_cost:
+            return False
+        if estimated_cost > self.max_per_request:
+            return False
+        return True
+
+    def add_cost(self, cost: float) -> None:
+        """Accumulate spend and bump the request counter."""
+        self.daily_spent += cost
+        self.request_count += 1
+
+    def get_alert_level(self) -> str:
+        """``"normal"`` / ``"warning"`` / ``"exceeded"`` based on daily spend."""
+        if self.max_daily_cost <= 0:
+            return "exceeded"
+        ratio = self.daily_spent / self.max_daily_cost
+        if ratio >= 1.0:
+            return "exceeded"
+        if ratio >= self.alert_threshold:
+            return "warning"
+        return "normal"
+
+    def to_dict(self) -> dict:
+        """Snapshot for audit reporting."""
+        return {
+            "max_daily_cost": self.max_daily_cost,
+            "max_per_request": self.max_per_request,
+            "alert_threshold": self.alert_threshold,
+            "daily_spent": round(self.daily_spent, 6),
+            "request_count": self.request_count,
+            "alert_level": self.get_alert_level(),
+        }
 
 
 @dataclass
@@ -133,18 +173,29 @@ class ComplianceConfig:
       probe before execution), ``strict`` (same as standard).
     * ``human_review_patterns`` — substrings that mark a request as
       sensitive and route it through ``approve()``/``reject()``.
+    * ``human_review_action`` — ``"return"`` (default; returns a pending
+      result with ``needs_approval=True``) or ``"raise"`` (raise
+      :class:`~brompt.widget.HumanApprovalRequired` instead).
     * ``policy_rules`` — list of rule dicts for the Policy-as-Code engine
       (see :class:`~brompt.policy.PolicyRule`). ``policy_path`` loads the
       same rules from a YAML ``security_policy.rules`` block.
+    * ``data_residency`` — optional region tag (``"eu"``, ``"us"``, ...)
+      stamped on every result for GDPR/regional governance.
     """
 
     enabled: bool = False
     mode: str = "standard"
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     human_review_patterns: list[str] = field(default_factory=list)
+    human_review_action: str = "return"
     policy_rules: list[dict] = field(default_factory=list)
     policy_path: Optional[str] = None
     signing_key: Optional[str] = None
+    data_residency: Optional[str] = None
+
+    def __post_init__(self):
+        if self.human_review_action not in ("return", "raise"):
+            raise ValueError("human_review_action must be 'return' or 'raise'")
 
 
 @dataclass
@@ -295,9 +346,11 @@ class WidgetConfig:
                     alert_threshold=budget.get("alert_threshold", 0.8),
                 ),
                 human_review_patterns=comp.get("human_review_patterns", []),
+                human_review_action=comp.get("human_review_action", "return"),
                 policy_rules=comp.get("policy_rules", []),
                 policy_path=comp.get("policy_path"),
                 signing_key=comp.get("signing_key") or os.getenv("BROMPT_AUDIT_SECRET"),
+                data_residency=comp.get("data_residency"),
             )
 
         cfg.debug = data.get("debug", False)
