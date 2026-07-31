@@ -7,7 +7,9 @@ from .audit import AuditLog
 from .circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from .classifier import ClassificationResult, InjectionClassifier, LLMInjectionClassifier, PendingReviewError, Tier
 from .config import (
+    BudgetConfig,
     CacheConfig,
+    ComplianceConfig,
     FeedbackConfig,
     GenerationConfig,
     LogLevel,
@@ -51,7 +53,7 @@ from .ratelimit import RateLimiter, RateLimiterBackend, RateLimitExceededError, 
 from .router import ComplexityLevel, ModelRouter, RoutingStrategy
 from .security import SecurityEngine, SecurityViolationError
 from .session import Message, Session, SessionManager
-from .widget import PromptClient, PromptResult
+from .widget import BudgetExceededError, HumanApprovalRequired, PromptClient, PromptResult, TamperDetectedError
 
 try:
     from .feedback import FeedbackLoop, PromptOutcome
@@ -67,15 +69,19 @@ __all__ = [
     "AuditLog",
     "BaseHook",
     "BromptEngine",
+    "BudgetConfig",
+    "BudgetExceededError",
     "CacheConfig",
     "CircuitBreaker",
     "CircuitBreakerOpenError",
     "ClassificationResult",
     "ComplexityLevel",
+    "ComplianceConfig",
     "FeedbackConfig",
     "GenerationConfig",
     "GoogleProvider",
     "HooksManager",
+    "HumanApprovalRequired",
     "InjectionClassifier",
     "LLMInjectionClassifier",
     "LLMProvider",
@@ -119,6 +125,7 @@ __all__ = [
     "Tier",
     "TimingHook",
     "Tracer",
+    "TamperDetectedError",
     "ValidationHook",
     "WidgetConfig",
     "alert_manager",

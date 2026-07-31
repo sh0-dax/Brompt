@@ -601,7 +601,7 @@ Commands:
   clear      Clear engine memory and history
 ```
 
-### `PromptClient(config=None, audit_log_path=None)` (alias: `BromptWidget`)
+### `PromptClient(config=None, enable_token_optimization=True, enable_cache=True, enable_auto_detect=False, enable_streaming=True, audit_log_path=None, audit_secret_key=None, compliance=None)` (alias: `BromptWidget`)
 
 Unified high-level entry point combining engine, session, and widget config.
 
@@ -614,6 +614,43 @@ print(result.response)
 ```
 
 > **Note:** `BromptWidget` is maintained as a backward-compatible alias for `PromptClient`.
+
+#### Compliance mode
+
+When `audit_log_path` (and optionally `audit_secret_key` for HMAC-signed entries) is set, every `prompt()` call is recorded in a SHA-256 hash-chained, tamper-evident audit log and the returned `PromptResult` carries proof fields (`audit_hash`, `audit_chain_id`, `tamper_check`, `execution_id`).
+
+```python
+from brompt import PromptClient
+from brompt.config import ComplianceConfig, BudgetConfig
+
+compliance = ComplianceConfig(
+    enabled=True,
+    signing_key=open("secret.key").read().strip(),  # or set BROMPT_AUDIT_SECRET
+    budget=BudgetConfig(max_daily_cost=25.0, max_per_request=2.0),
+    human_review_patterns=["transfer", "refund"],
+    policy_rules=[{"caller_id": "batch-*", "action": "deny", "reason": "batch jobs go through the queue"}],
+)
+
+client = PromptClient(
+    audit_log_path="logs/audit.log",
+    audit_secret_key=compliance.signing_key,
+    compliance=compliance,
+)
+
+result = await client.prompt("Approve a $1000 transfer", caller_id="teller-7")
+if result.needs_approval:
+    result = await client.approve(result.approval_id, approver="branch-manager")
+
+# Prove a result is authentic and part of an untampered chain:
+assert client.verify_execution(result) is True
+replayed = await client.replay(result.execution_id)  # re-executes + chains a new entry
+
+# Export an auditable, verifiable trail:
+for entry in client.export_audit_trail():
+    print(entry["id"], entry["event"], entry["chain_verified"], entry["signed"])
+```
+
+Compliance gates, in order: policy-as-code (deny rules by `caller_id`), air-gap probe (raises in `air_gapped` mode when outbound connectivity is detected), budget preflight (raises `BudgetExceededError`), then human review for sensitive patterns (`needs_approval` with `approve()` / `reject()`). Every gate, provider failure, approval, and rejection is itself audit-logged, so the trail covers both allowed and blocked executions.
 
 ### Template Engine
 
@@ -790,7 +827,9 @@ matrix:
 - ✅ **Hash-chained audit log** — SHA-256 append-only chain; `AuditLog.verify()` detects tampering
 - ✅ **Signed execution receipts** — audit `entry_hash` embedded in every `ExecutionResult`; HMAC-signed audit entries when `audit_secret_key` is configured (legal-grade proof of pipeline passage)
 - ✅ **Policy-as-code** — per-tenant YAML policies evaluated before provider execution
-- ✅ **Human-in-the-loop** — configurable gray-zone threshold for sensitive deployments
+- ✅ **Human-in-the-loop** — sensitive prompts (regex patterns) pause for `approve()`/`reject()`; decisions are audit-logged
+- ✅ **Budget enforcement** — in-process daily/per-request spend guardrails via `BudgetConfig`
+- ✅ **Air-gap guard** — optional `air_gapped` mode raises if outbound connectivity is detected (best-effort probe)
 - ✅ **Security guardrails** — multi-layer: canonicalization, regex blocklist, LLM classifier, output redaction
 - ✅ **Rate limiting** (in-process sliding window; distributed variant needs Redis)
 - ✅ **Output sanitization** — redacts secret-like strings before reaching the caller
@@ -819,6 +858,7 @@ matrix:
 - ⚠️ **Signed execution receipt serialization** — produce standalone `.receipt` files for external audit
 - ⚠️ **Deterministic replay CLI** — `brompt replay <audit-id> --model=X` with diff output (engine `replay()` exists; CLI command pending)
 - ⚠️ **Distributed rate limiting** — multi-instance Redis-backed rate limiter
+- ⚠️ **Cross-process budget ledger** — current `BudgetConfig` limits are enforced in-process only; a shared/atomic budget store is needed for multi-instance deployments
 
 ---
 

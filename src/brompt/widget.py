@@ -5,14 +5,16 @@ import json
 import logging
 import os
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from threading import Lock
 from typing import AsyncIterator, Optional
 
 from .audit import AuditLog
-from .config import ProviderConfig, WidgetConfig
+from .config import ComplianceConfig, ProviderConfig, WidgetConfig
 from .optimizer import TokenOptimizer
+from .policy import PolicyEngine, PolicyRule, PolicyViolationError
 from .pricing import estimate_cost
 from .providers import LLMProvider, ProviderFactory
 from .router import ModelRouter
@@ -32,6 +34,18 @@ try:
 except ImportError:
     AUTO_DETECT_AVAILABLE = False
     _auto_detect_module = None
+
+
+class TamperDetectedError(Exception):
+    """Raised when the audit chain or a recorded entry has been tampered with."""
+
+
+class BudgetExceededError(Exception):
+    """Raised when a request would exceed the configured cost budget."""
+
+
+class HumanApprovalRequired(Exception):
+    """Raised when a request requires human approval (human-in-the-loop)."""
 
 
 def _task_type_str(task_type) -> Optional[str]:
@@ -69,6 +83,15 @@ class PromptResult:
     detected_task: Optional[str] = None
     detection_confidence: float = 0.0
     cached: bool = False
+    execution_id: Optional[str] = None
+    audit_hash: Optional[str] = None
+    audit_chain_id: Optional[str] = None
+    tamper_check: Optional[bool] = None
+    policy_id: Optional[str] = None
+    compliance_mode: Optional[str] = None
+    needs_approval: bool = False
+    approval_id: Optional[str] = None
+    error_message: Optional[str] = None
     metadata: dict = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
 
@@ -97,6 +120,15 @@ class PromptResult:
             "detected_task": self.detected_task,
             "detection_confidence": self.detection_confidence,
             "cached": self.cached,
+            "execution_id": self.execution_id,
+            "audit_hash": self.audit_hash,
+            "audit_chain_id": self.audit_chain_id,
+            "tamper_check": self.tamper_check,
+            "policy_id": self.policy_id,
+            "compliance_mode": self.compliance_mode,
+            "needs_approval": self.needs_approval,
+            "approval_id": self.approval_id,
+            "error_message": self.error_message,
             "metadata": self.metadata,
             "timestamp": self.timestamp.isoformat(),
         }
@@ -323,11 +355,40 @@ class PromptClient:
         enable_auto_detect: bool = False,
         enable_streaming: bool = True,
         audit_log_path: Optional[str] = None,
+        audit_secret_key: Optional[str] = None,
+        compliance: Optional[ComplianceConfig] = None,
     ):
         self.config = config or WidgetConfig()
+        self._compliance = compliance or self.config.compliance
         self._audit: Optional[AuditLog] = None
+        self._audit_key = (
+            audit_secret_key
+            or self._compliance.signing_key
+            or os.getenv("BROMPT_AUDIT_SECRET")
+        )
         if audit_log_path:
-            self._audit = AuditLog(audit_log_path)
+            self._audit = AuditLog(audit_log_path, secret_key=self._audit_key)
+        elif self._compliance.enabled:
+            self._audit = AuditLog("brompt_audit.log", secret_key=self._audit_key)
+
+        self._policy: Optional[PolicyEngine] = None
+        if self._compliance.enabled and (
+            self._compliance.policy_rules or self._compliance.policy_path
+        ):
+            rules = list(self._compliance.policy_rules)
+            if self._compliance.policy_path:
+                import yaml
+                with open(self._compliance.policy_path) as _f:
+                    _data = yaml.safe_load(_f) or {}
+                rules += _data.get("security_policy", {}).get("rules", [])
+            self._policy = PolicyEngine(rules=[PolicyRule.from_dict(r) for r in rules])
+
+        self._budget = self._compliance.budget if self._compliance.enabled else None
+        self._daily_spent = 0.0
+        self._request_count = 0
+        self._pending_approvals: dict[str, dict] = {}
+        self._air_gapped = self._compliance.enabled and self._compliance.mode == "air_gapped"
+
         errors = self.config.validate()
         if errors:
             raise ValueError("Invalid config:\n" + "\n".join(f"  - {e}" for e in errors))
@@ -410,12 +471,39 @@ class PromptClient:
         session_id: Optional[str] = None,
         context: Optional[dict] = None,
         system_prompt: Optional[str] = None,
+        caller_id: str = "default",
+        _skip_approval: bool = False,
         **generation_kwargs,
     ) -> PromptResult:
         if not user_input or not user_input.strip():
             raise ValueError("user_input cannot be empty")
         template = template or self.config.default_template
         start_time = time.time()
+        execution_id = uuid.uuid4().hex[:16]
+
+        if self._policy is not None:
+            try:
+                self._policy.check(caller_id)
+            except PolicyViolationError as exc:
+                self._record_event("policy_denied", execution_id, False, user_input, detail=str(exc))
+                raise
+
+        if self._air_gapped:
+            try:
+                self._verify_air_gapped()
+            except RuntimeError as exc:
+                self._record_event("air_gapped_violation", execution_id, False, user_input, detail=str(exc))
+                raise
+
+        if self._budget is not None and self._budget.enabled:
+            self._check_budget_preflight(user_input)
+
+        if not _skip_approval and self._is_sensitive(user_input):
+            return self._request_human_approval(
+                user_input, template, session_id, context, system_prompt,
+                caller_id, execution_id, generation_kwargs,
+            )
+
         detection = None
         try:
             # Auto-detect task type if enabled
@@ -510,6 +598,18 @@ class PromptClient:
                     "savings_percent": round(savings.get("savings_percent", 0), 1),
                 },
             )
+            result.execution_id = execution_id
+            result.compliance_mode = self._compliance.mode
+            if self._policy is not None:
+                result.policy_id = caller_id
+            self._attach_proof(
+                result, execution_id,
+                "execute" if provider_result.is_success else "provider_error",
+                latency_ms, provider_result.tokens_used, generated_prompt, cost,
+                is_secure=provider_result.is_success,
+            )
+            if self._budget is not None and self._budget.enabled:
+                self._update_budget(cost, execution_id, generated_prompt)
             if session:
                 session.add_message("user", user_input, tokens_used=0)
                 session.add_message(
@@ -545,6 +645,7 @@ class PromptClient:
         except Exception as e:
             latency_ms = (time.time() - start_time) * 1000
             self._stats["errors"] += 1
+            self._record_event("provider_error", execution_id, False, user_input, detail=str(e))
             self._emit("on_error", {"error": e, "user_input": user_input})
             logger.error(f"Execution failed: {e}")
             raise RuntimeError(f"Model call failed: {e}") from e
@@ -556,11 +657,15 @@ class PromptClient:
         session_id: Optional[str] = None,
         system_prompt: Optional[str] = None,
         context: Optional[dict] = None,
+        caller_id: str = "default",
         **generation_kwargs,
     ) -> AsyncIterator[str]:
         if not self._streaming_enabled:
             raise RuntimeError("Streaming is not enabled")
         template = template or self.config.default_template
+        execution_id = uuid.uuid4().hex[:16]
+        if self._policy is not None:
+            self._policy.check(caller_id)
         generated_prompt = self._build_prompt(
             user_input, template, context=context, system_prompt=system_prompt,
         )
@@ -568,6 +673,8 @@ class PromptClient:
         async for chunk in self._provider.stream(generated_prompt, **generation_kwargs):
             full_response.append(chunk)
             yield chunk
+        self._record_event("stream", execution_id, True, generated_prompt,
+                           detail="".join(full_response))
         if session_id:
             session = self._sessions.get_session(session_id)
             if session:
@@ -660,41 +767,246 @@ class PromptClient:
             report["feedback"] = self._feedback.get_performance_report()
         return report
 
-    def replay(self, entry_hash: str, model: Optional[str] = None, system_prompt: Optional[str] = None) -> dict:
-        """Re-run a previous audit entry on a (possibly different) model.
+    async def replay(
+        self,
+        execution_id: str,
+        model: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        caller_id: str = "default",
+    ) -> PromptResult:
+        """Re-run a previously recorded execution from the audit trail.
 
-        Requires ``audit_log_path`` to have been passed at construction.
+        Verifies the whole chain and the specific entry first; raises
+        :class:`TamperDetectedError` if either fails. The re-run is itself
+        recorded as a new chained entry with its own proof fields.
 
         Parameters
         ----------
-        entry_hash :
-            The ``entry_hash`` of the audit entry to replay.
+        execution_id :
+            The ``PromptResult.execution_id`` (or audit ``state_id``) to replay.
         model :
-            Model name for the re-run (e.g. ``"gpt-4o"``).
-            Defaults to the current provider's model.
+            Model for the re-run (e.g. ``"gpt-4o"``). Defaults to the
+            current provider's model — use a different one to detect drift.
         system_prompt :
             Optional system prompt forwarded to the provider.
-
-        Returns
-        -------
-        A dict with keys ``original`` (audit entry) and ``replayed``
-        (:class:`PromptResult`) for comparison.
+        caller_id :
+            Identity attributed to the replay in policy checks and audit.
         """
         if self._audit is None:
-            raise RuntimeError("Replay requires audit_log_path to be set at construction")
+            raise RuntimeError("Replay requires an audit log (pass audit_log_path= or enable compliance)")
+        if not self._audit.verify():
+            raise TamperDetectedError("Audit chain integrity compromised")
+        entry = self._audit.find_by_state(execution_id)
+        if entry is None:
+            raise KeyError(f"No audit entry for execution: {execution_id}")
+        if not self._audit.verify_entry(entry.get("entry_hash")):
+            raise TamperDetectedError(f"Audit entry {execution_id} has been tampered")
+
+        if self._policy is not None:
+            self._policy.check(caller_id)
 
         provider = self._provider
         if model and model != self.config.provider.model:
             cfg = ProviderConfig(type=self.config.provider.type, model=model)
             provider = ProviderFactory.from_config(cfg)
 
-        result = self._audit.replay(entry_hash, provider, system=system_prompt)
-        if "replayed" in result:
-            pr = result["replayed"]
-            from .providers_core import ProviderResult
-            if isinstance(pr, ProviderResult):
-                result["replayed"] = {"text": pr.text, "model": pr.model}
+        msgs = entry.get("messages") or [{"role": "user", "content": entry.get("detail") or ""}]
+        prompt_text = "\n".join(
+            m.get("content", "") for m in msgs if m.get("role") != "system"
+        ) or (msgs[0].get("content", "") if msgs else "")
+
+        start_time = time.time()
+        provider_result = await provider.generate(prompt_text, system=system_prompt)
+        latency_ms = (time.time() - start_time) * 1000
+        new_execution_id = uuid.uuid4().hex[:16]
+        result = PromptResult(
+            user_input=prompt_text,
+            generated_prompt=prompt_text,
+            response=provider_result.text,
+            template_id="replay",
+            model=provider_result.model,
+            execution_id=new_execution_id,
+            tokens_used=provider_result.tokens_used,
+            prompt_tokens=provider_result.prompt_tokens or len(prompt_text) // 4,
+            completion_tokens=provider_result.completion_tokens or provider_result.tokens_used,
+            plain_prompt_tokens=len(prompt_text) // 4,
+            latency_ms=latency_ms,
+            finish_reason=provider_result.finish_reason,
+            cached=False,
+            compliance_mode=self._compliance.mode,
+        )
+        if self._policy is not None:
+            result.policy_id = caller_id
+        self._attach_proof(result, new_execution_id, "replay", latency_ms,
+                           provider_result.tokens_used, prompt_text, 0.0)
         return result
+
+    def verify_execution(self, result) -> bool:
+        """Return ``True`` when the whole audit chain is intact AND the
+        specific entry behind *result* verifies (hash + optional HMAC)."""
+        if self._audit is None or result is None or result.audit_hash is None:
+            return False
+        return self._audit.verify() and self._audit.verify_entry(result.audit_hash)
+
+    def export_audit_trail(self) -> list[dict]:
+        """Export the full audit trail for external review."""
+        if self._audit is None:
+            return []
+        return [
+            {
+                "id": e.get("entry_hash"),
+                "state_id": e.get("state_id"),
+                "event": e.get("event"),
+                "timestamp": e.get("timestamp"),
+                "prev_hash": e.get("prev_hash"),
+                "signed": self._audit.is_signed,
+                "chain_verified": self._audit.verify_entry(e.get("entry_hash"))
+                if e.get("entry_hash") else False,
+            }
+            for e in self._audit.read_all()
+        ]
+
+    async def approve(self, approval_id: str, approver: str = "admin") -> PromptResult:
+        """Approve a pending sensitive request and execute it.
+
+        The approval itself is recorded in the audit trail before the
+        original request is re-run.
+        """
+        if approval_id not in self._pending_approvals:
+            raise ValueError(f"Approval {approval_id} not found")
+        pending = self._pending_approvals.pop(approval_id)
+        self._record_event("human_approved", uuid.uuid4().hex[:16], True,
+                           pending["message"], detail=f"approver={approver}")
+        return await self.prompt(
+            pending["message"],
+            template=pending.get("template"),
+            session_id=pending.get("session_id"),
+            context=pending.get("context"),
+            system_prompt=pending.get("system_prompt"),
+            caller_id=pending.get("caller_id", "default"),
+            _skip_approval=True,
+            **pending.get("generation_kwargs", {}),
+        )
+
+    def reject(self, approval_id: str, reason: str = "") -> None:
+        """Reject a pending sensitive request and record the rejection."""
+        pending = self._pending_approvals.pop(approval_id, None)
+        self._record_event("human_rejected", uuid.uuid4().hex[:16], False,
+                           pending["message"] if pending else "",
+                           detail=f"reason={reason or 'no reason given'}")
+
+    # -- compliance helpers ------------------------------------------------
+
+    def _record_event(self, event: str, state_id: str, is_secure: bool,
+                      content: str, detail: Optional[str] = None,
+                      latency_ms: Optional[float] = None,
+                      tokens_used: int = 0) -> Optional[str]:
+        """Record an audit entry and return its ``entry_hash`` (or ``None``)."""
+        if self._audit is None:
+            return None
+        record = self._audit.record(
+            event, state_id, is_secure, detail=detail,
+            latency_ms=latency_ms, tokens_used=tokens_used,
+            messages=[{"role": "user", "content": content}],
+        )
+        return record.get("entry_hash")
+
+    def _attach_proof(self, result: PromptResult, execution_id: str, event: str,
+                      latency_ms: float, tokens_used: int, content: str,
+                      cost: float, is_secure: bool = True) -> None:
+        """Record the execution in the audit trail and stamp proof onto *result*."""
+        entry_hash = self._record_event(
+            event, execution_id, is_secure, content,
+            latency_ms=latency_ms, tokens_used=tokens_used,
+        )
+        if entry_hash is None:
+            return
+        entry = self._audit.find_entry(entry_hash)
+        result.audit_hash = entry_hash
+        result.audit_chain_id = entry.get("prev_hash") if entry else None
+        result.tamper_check = self._audit.verify()
+
+    def _is_sensitive(self, text: str) -> bool:
+        if not self._compliance.human_review_patterns:
+            return False
+        lowered = text.lower()
+        return any(p.lower() in lowered for p in self._compliance.human_review_patterns)
+
+    def _request_human_approval(
+        self, user_input: str, template: Optional[str], session_id: Optional[str],
+        context: Optional[dict], system_prompt: Optional[str], caller_id: str,
+        execution_id: str, generation_kwargs: dict,
+    ) -> PromptResult:
+        approval_id = hashlib.sha256(
+            f"{execution_id}:{user_input}".encode()
+        ).hexdigest()[:16]
+        self._pending_approvals[approval_id] = {
+            "message": user_input,
+            "template": template,
+            "session_id": session_id,
+            "context": context,
+            "system_prompt": system_prompt,
+            "caller_id": caller_id,
+            "generation_kwargs": generation_kwargs,
+        }
+        self._record_event("human_approval_required", execution_id, False,
+                           user_input, detail=f"approval_id={approval_id}")
+        return PromptResult(
+            user_input=user_input,
+            generated_prompt="",
+            response="",
+            template_id=template or self.config.default_template,
+            model=self.config.provider.model,
+            execution_id=execution_id,
+            cached=False,
+            needs_approval=True,
+            approval_id=approval_id,
+            error_message=f"Human approval required (ID: {approval_id})",
+            compliance_mode=self._compliance.mode,
+        )
+
+    def _check_budget_preflight(self, user_input: str) -> None:
+        if self._daily_spent >= self._budget.max_daily_cost:
+            self._record_event("budget_exceeded", uuid.uuid4().hex[:16], False,
+                               user_input, detail=f"daily_spent={self._daily_spent:.4f}")
+            raise BudgetExceededError(
+                f"Daily budget exceeded: ${self._daily_spent:.4f} >= ${self._budget.max_daily_cost}"
+            )
+        estimate = estimate_cost(
+            self._provider.__class__.__name__,
+            len(user_input) // 4, self.config.generation.max_tokens,
+        )
+        if estimate > self._budget.max_per_request:
+            self._record_event("budget_exceeded", uuid.uuid4().hex[:16], False,
+                               user_input, detail=f"estimate={estimate:.4f}")
+            raise BudgetExceededError(
+                f"Request exceeds per-request budget: est ${estimate:.4f} > ${self._budget.max_per_request}"
+            )
+
+    def _update_budget(self, cost: float, execution_id: str, content: str) -> None:
+        self._daily_spent += cost
+        self._request_count += 1
+        if self._daily_spent >= self._budget.max_daily_cost * self._budget.alert_threshold:
+            self._record_event(
+                "budget_warning", execution_id, True, content,
+                detail=f"daily_spent={self._daily_spent:.4f}",
+            )
+
+    def _verify_air_gapped(self) -> None:
+        """Best-effort air-gap check: raise if the network appears reachable."""
+        try:
+            import socket
+            socket.create_connection(("8.8.8.8", 53), timeout=1)
+        except OSError:
+            return  # no connectivity — expected
+        raise RuntimeError(
+            "Air-gapped mode violated: outbound network access detected"
+        )
+
+    @property
+    def audit_log(self) -> Optional[AuditLog]:
+        """The bound audit log (``None`` when compliance is disabled)."""
+        return self._audit
 
     def _build_prompt(
         self, user_input: str, template: str, context: Optional[dict] = None,

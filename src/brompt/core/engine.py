@@ -153,7 +153,11 @@ class BromptEngine:
         audit_record = self.audit.record(event, self.state_id, is_pending,
                                          str(err), latency_ms=0.0, tokens_used=0)
         return ExecutionResult(state_id=self.state_id, is_secure=is_pending,
-                               data={}, error_message=msg, receipt_hash=audit_record.get("entry_hash"))
+                               data={}, error_message=msg,
+                               receipt_hash=audit_record.get("entry_hash"),
+                               audit_hash=audit_record.get("entry_hash"),
+                               audit_chain_id=audit_record.get("prev_hash"),
+                               tamper_check=self.audit.verify())
 
     # -- synchronous path -------------------------------------------------------
 
@@ -218,6 +222,9 @@ class BromptEngine:
                     data=output_payload,
                     error_message=f"Provider error: {err}",
                     receipt_hash=ar.get("entry_hash"),
+                    audit_hash=ar.get("entry_hash"),
+                    audit_chain_id=ar.get("prev_hash"),
+                    tamper_check=self.audit.verify(),
                 )
 
         self._last_completion_tokens = len(reply) // 4 if reply else 0
@@ -227,7 +234,10 @@ class BromptEngine:
                                latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
                                messages=messages_sent)
         return ExecutionResult(state_id=self.state_id, is_secure=True, data=output_payload,
-                               receipt_hash=ar.get("entry_hash"))
+                               receipt_hash=ar.get("entry_hash"),
+                               audit_hash=ar.get("entry_hash"),
+                               audit_chain_id=ar.get("prev_hash"),
+                               tamper_check=self.audit.verify())
 
 
     # -- asynchronous path --------------------------------------------------
@@ -279,6 +289,9 @@ class BromptEngine:
                 data=output_payload,
                 error_message=f"Provider error: {err}",
                 receipt_hash=ar.get("entry_hash"),
+                audit_hash=ar.get("entry_hash"),
+                audit_chain_id=ar.get("prev_hash"),
+                tamper_check=self.audit.verify(),
             )
 
         if reply is not None:
@@ -293,7 +306,10 @@ class BromptEngine:
                                latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
                                messages=history)
         return ExecutionResult(state_id=self.state_id, is_secure=True, data=output_payload,
-                               receipt_hash=ar.get("entry_hash"))
+                               receipt_hash=ar.get("entry_hash"),
+                               audit_hash=ar.get("entry_hash"),
+                               audit_chain_id=ar.get("prev_hash"),
+                               tamper_check=self.audit.verify())
 
     # -- replay ----------------------------------------------------------------
 

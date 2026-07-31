@@ -57,3 +57,6 @@ class ExecutionResult(BaseModel):
     data: dict[str, Any]
     error_message: str | None = None
     receipt_hash: str | None = None
+    audit_hash: str | None = None
+    audit_chain_id: str | None = None
+    tamper_check: bool | None = None

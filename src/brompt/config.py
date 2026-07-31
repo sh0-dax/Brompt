@@ -105,6 +105,49 @@ class CacheConfig:
 
 
 @dataclass
+class BudgetConfig:
+    """Cost budget enforcement tied to the audit trail.
+
+    All accounting is in-process (per client instance); it does not span
+    multiple replicas. ``max_daily_cost``/``max_per_request`` are USD and
+    compared against ``pricing.calculate_cost`` estimates.
+    """
+
+    max_daily_cost: float = 100.0
+    max_per_request: float = 10.0
+    alert_threshold: float = 0.8
+    enabled: bool = True
+
+    def __post_init__(self):
+        if self.max_daily_cost <= 0:
+            raise ValueError("max_daily_cost must be > 0")
+        if self.max_per_request <= 0:
+            raise ValueError("max_per_request must be > 0")
+
+
+@dataclass
+class ComplianceConfig:
+    """Compliance behaviour for :class:`~brompt.widget.PromptClient`.
+
+    * ``mode`` — ``standard`` (audit + signing), ``air_gapped`` (network
+      probe before execution), ``strict`` (same as standard).
+    * ``human_review_patterns`` — substrings that mark a request as
+      sensitive and route it through ``approve()``/``reject()``.
+    * ``policy_rules`` — list of rule dicts for the Policy-as-Code engine
+      (see :class:`~brompt.policy.PolicyRule`). ``policy_path`` loads the
+      same rules from a YAML ``security_policy.rules`` block.
+    """
+
+    enabled: bool = False
+    mode: str = "standard"
+    budget: BudgetConfig = field(default_factory=BudgetConfig)
+    human_review_patterns: list[str] = field(default_factory=list)
+    policy_rules: list[dict] = field(default_factory=list)
+    policy_path: Optional[str] = None
+    signing_key: Optional[str] = None
+
+
+@dataclass
 class FeedbackConfig:
     enabled: bool = True
     storage_path: str = "./data/brompt_feedback.json"
@@ -150,6 +193,7 @@ class WidgetConfig:
     hooks: HooksConfig = field(default_factory=HooksConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     routing: RoutingConfig = field(default_factory=RoutingConfig)
+    compliance: ComplianceConfig = field(default_factory=ComplianceConfig)
     debug: bool = False
     default_template: str = "default"
 
@@ -237,6 +281,23 @@ class WidgetConfig:
                 level=LogLevel(lc.get("level", "INFO")),
                 file_path=lc.get("file_path"),
                 format=lc.get("format", "%(asctime)s - %(name)s - %(levelname)s - %(message)s"),
+            )
+
+        if "compliance" in data:
+            comp = data["compliance"]
+            budget = comp.get("budget", {})
+            cfg.compliance = ComplianceConfig(
+                enabled=comp.get("enabled", False),
+                mode=comp.get("mode", "standard"),
+                budget=BudgetConfig(
+                    max_daily_cost=budget.get("max_daily_cost", 100.0),
+                    max_per_request=budget.get("max_per_request", 10.0),
+                    alert_threshold=budget.get("alert_threshold", 0.8),
+                ),
+                human_review_patterns=comp.get("human_review_patterns", []),
+                policy_rules=comp.get("policy_rules", []),
+                policy_path=comp.get("policy_path"),
+                signing_key=comp.get("signing_key") or os.getenv("BROMPT_AUDIT_SECRET"),
             )
 
         cfg.debug = data.get("debug", False)

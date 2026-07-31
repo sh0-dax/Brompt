@@ -136,22 +136,62 @@ class AuditLog:
                 return entry
         return None
 
+    def find_by_state(self, state_id: str) -> dict[str, Any] | None:
+        """Return the first audit entry whose ``state_id`` matches *state_id*.
+
+        Useful for looking up an execution by the identifier handed back to
+        the caller (e.g. ``PromptResult.execution_id``).
+        """
+        for entry in self.read_all():
+            if entry.get("state_id") == state_id:
+                return entry
+        return None
+
+    def verify_entry(self, entry_hash: str) -> bool:
+        """Verify a single entry: it must exist, chain to its predecessor,
+        and (when the log is signed) carry a valid HMAC.
+
+        Returns ``False`` if the entry is missing or tampered with.
+        """
+        entry = self.find_entry(entry_hash)
+        if entry is None:
+            return False
+        payload = {k: v for k, v in entry.items() if k not in ("entry_hash", "hmac")}
+        prev_hash = payload.get("prev_hash", GENESIS_HASH)
+        if self._hash_entry(prev_hash, payload) != entry_hash:
+            return False
+        if self._hmac_key is not None:
+            stored_hmac = entry.get("hmac")
+            if stored_hmac is None:
+                return False  # downgrade attack
+            expected = hmac.new(self._hmac_key, entry_hash.encode("utf-8"), hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(expected, stored_hmac):
+                return False
+        return True
+
     def replay(
         self,
         entry_hash: str,
-        provider,
+        provider=None,
         system: str | None = None,
+        fn=None,
     ) -> dict[str, Any]:
-        """Re-run a previous execution on a *provider* and return a comparison.
+        """Re-run a previous execution and return a comparison.
 
         Parameters
         ----------
         entry_hash :
             The ``entry_hash`` of the audit entry to replay.
         provider :
-            An :class:`LLMProvider` instance to call with the original messages.
+            A :class:`LLMProvider` instance to call with the original messages.
+            Ignored when *fn* is provided.
         system :
-            Optional system prompt forwarded to *provider*.
+            Optional system prompt forwarded to the provider.
+        fn :
+            Alternative callable ``fn(messages, system=None) -> str``.  Use
+            this when the provider does not match the ``(messages, system)``
+            calling convention (e.g. the async providers used by
+            ``PromptClient``).
 
         Returns
         -------
@@ -166,5 +206,8 @@ class AuditLog:
         if not msgs:
             return {"error": "Entry has no stored messages; cannot replay"}
         from .providers_core import ProviderResult
-        text = provider.generate(msgs, system=system)
+        if fn is not None:
+            text = fn(msgs, system=system)
+        else:
+            text = provider.generate(msgs, system=system)
         return {"original": entry, "replayed": ProviderResult(text=text)}
