@@ -422,6 +422,9 @@ brompt templates
 
 # Launch web UI (requires pip install -e ".[webui]")
 streamlit run webui/streamlit_app.py
+
+# Launch floating widget (requires tkinter; --live connects the engine)
+python -m brompt.guiapp [--live]
 ```
 
 ---
@@ -777,13 +780,28 @@ streamlit run webui/streamlit_app.py
 
 Opens a browser-based interface with chat panel, metrics dashboard, audit log viewer, and template browser.
 
-### Tkinter GUI (compliance dashboard)
+### Tkinter GUI (floating widget)
 
 ```bash
-python -m brompt.guiapp [--live]
+python -m brompt.guiapp            # launch — opens on the Docs tab
+python -m brompt.guiapp --live     # launch and immediately connect the engine + start live refresh
 ```
 
-Always-on-top floating widget with 5 tabs (Docs, Live Status, Charts, Chat, Settings), system tray minimize, and live engine monitoring. The GUI's `BromptWidget` class is the **frontend** — it uses `PromptClient` (the backend client) internally.
+Always-on-top floating widget with 5 tabs: **Docs, Live Status, Charts, Chat, Settings**.
+
+- **Live / Chart tabs** connect to the core `BromptEngine` (loading or creating `agent.brompt.yaml`) and stream real-time memory, hash-chained audit, security, and performance stats, plus 5 chart types (bar, line, area, stacked, donut).
+- **Chat tab** uses `PromptClient` directly with a provider chosen in Settings (Gemini, OpenAI, Anthropic, Mistral, Azure OpenAI, Ollama, LM Studio), surfacing token-savings and task auto-detection per reply.
+- **Settings tab** is a YAML editor that validates before saving and can browse/load any `.yaml` config file.
+- Minimize (`Ctrl+M`) collapses to a system-tray icon when `pystray` + Pillow are installed, otherwise to a floating badge; `Ctrl+Q` quits. Window position/size are persisted to `~/.brompt_geometry.json`.
+- Shortcuts: `Ctrl+D`/`Ctrl+L`/`Ctrl+C`/`Ctrl+H`/`Ctrl+S` switch tabs, `Ctrl+Enter` sends in Chat.
+
+On Windows, launch it without a console window via the helper script:
+
+```powershell
+.\brompt.ps1 widget
+```
+
+Requires Python's bundled `tkinter`; no extra pip packages are needed (`pystray`/`Pillow` are optional, for real tray support).
 
 ---
 
