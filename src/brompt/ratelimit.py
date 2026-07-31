@@ -38,11 +38,21 @@ class RateLimiter:
         self.window_seconds = window_seconds
         self._hits: dict[str, deque[float]] = {}
         self._lock = threading.Lock()
+        self._last_cleanup = 0.0
 
     def check(self, identifier: str = "default") -> None:
         """Registers a hit and raises if the window's request budget is exhausted."""
         now = time.monotonic()
         with self._lock:
+            if now - self._last_cleanup >= self.window_seconds:
+                self._last_cleanup = now
+                cutoff = now - self.window_seconds
+                for key in list(self._hits):
+                    q = self._hits[key]
+                    while q and q[0] < cutoff:
+                        q.popleft()
+                    if not q:
+                        del self._hits[key]
             window = self._hits.setdefault(identifier, deque())
             cutoff = now - self.window_seconds
             while window and window[0] < cutoff:

@@ -4,6 +4,7 @@ Detection with TaskType enum, complexity analysis, language detection, and model
 """
 
 import re
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -170,13 +171,27 @@ def _keyword_fallback(text: str) -> TaskDetection:
 class AutoDetectAgent:
     """Analyse user input and suggest optimal template, model, and generation parameters."""
 
-    def __init__(self):
-        self._cache = {}
+    def __init__(self, max_cache_entries: int = 1000):
+        self._cache: OrderedDict[str, TaskDetection] = OrderedDict()
+        self._max_cache_entries = max_cache_entries
+
+    def _cache_get(self, key: str) -> Optional[TaskDetection]:
+        if key in self._cache:
+            value = self._cache.pop(key)
+            self._cache[key] = value
+            return value
+        return None
+
+    def _cache_put(self, key: str, value: TaskDetection) -> None:
+        self._cache[key] = value
+        if len(self._cache) > self._max_cache_entries:
+            self._cache.popitem(last=False)
 
     def detect(self, user_input: str) -> TaskDetection:
         cache_key = user_input[:100].lower().strip()
-        if cache_key in self._cache:
-            return self._cache[cache_key]
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
 
         if not user_input or not user_input.strip():
             result = TaskDetection(
@@ -185,12 +200,12 @@ class AutoDetectAgent:
                 suggested_template="default", suggested_model=_DEFAULT_MODEL,
                 reasoning="Empty input",
             )
-            self._cache[cache_key] = result
+            self._cache_put(cache_key, result)
             return result
 
         if len(user_input.strip()) < SHORT_INPUT_THRESHOLD:
             result = _keyword_fallback(user_input)
-            self._cache[cache_key] = result
+            self._cache_put(cache_key, result)
             return result
 
         best_match: Optional[TaskDetection] = None
@@ -219,10 +234,10 @@ class AutoDetectAgent:
         if best_match is None:
             result = _keyword_fallback(user_input)
             result.extracted_entities = self._extract_entities(user_input)
-            self._cache[cache_key] = result
+            self._cache_put(cache_key, result)
             return result
 
-        self._cache[cache_key] = best_match
+        self._cache_put(cache_key, best_match)
         return best_match
 
     def detect_batch(self, inputs: list[str]) -> list[TaskDetection]:

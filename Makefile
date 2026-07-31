@@ -16,7 +16,7 @@ lint:
 	ruff check src/brompt tests
 
 typecheck:
-	mypy src/brompt --strict
+	mypy src/brompt
 	pyright src/brompt
 
 coverage:

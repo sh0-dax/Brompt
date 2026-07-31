@@ -4,7 +4,7 @@ import logging
 import threading
 import time
 import uuid
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -52,10 +52,10 @@ class Span:
 
 
 class Tracer:
-    """Simple distributed tracer."""
+    """Simple distributed tracer.  Span history is bounded by ``max_spans``."""
 
-    def __init__(self):
-        self._spans: list[Span] = []
+    def __init__(self, max_spans: int = 10000):
+        self._spans: deque[Span] = deque(maxlen=max_spans)
 
     def start_span(self, name: str, trace_id: str | None = None, parent_span_id: str | None = None, attributes: dict | None = None) -> Span:  # noqa: E501
         span = Span(
@@ -232,11 +232,12 @@ class Alert:
 
 
 class AlertManager:
-    """Evaluates alert rules and manages alert lifecycle."""
+    """Evaluates alert rules and manages alert lifecycle.  Alert history is
+    bounded by ``max_alerts`` (oldest alerts are evicted first)."""
 
-    def __init__(self):
+    def __init__(self, max_alerts: int = 5000):
         self._rules: list[AlertRule] = []
-        self._alerts: list[Alert] = []
+        self._alerts: deque[Alert] = deque(maxlen=max_alerts)
         self._handlers: list[Callable[[Alert], None]] = []
 
     def add_rule(self, rule: AlertRule):
