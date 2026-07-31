@@ -180,13 +180,12 @@ Brompt implements a multi-layer defense-in-depth security pipeline, not a single
 
 ### Layer 2: Pattern Blocklist
 
-14 regex patterns covering 4 languages (English, Arabic, Italian, German) for:
+15 regex patterns covering 4 languages (English, Arabic, Italian, German) for:
 - Direct instruction overrides
 - System prompt leakage attempts
 - Guardrail bypass attempts
 - Jailbreak persona switches
 - Role-play bypasses
-
 ### Layer 3: Semantic Classifier (`classifier.py`)
 
 An optional LLM-based second line of defense that reasons about intent, not surface text:
@@ -310,7 +309,7 @@ Brompt/
 │       │   ├── engine.py             # Main Execution Runtime Engine
 │       │   └── template_engine.py    # Template engine (variables, filters, control flow, 6 built-in templates)
 │       ├── providers/
-│       │   ├── __init__.py           # Provider registry with all 7 providers
+│       │   ├── __init__.py           # Provider registry + factory (openai, anthropic, google, mistral, ollama; Azure/LM Studio constructed directly)
 │       │   ├── base.py               # Abstract LLMProvider base class
 │       │   ├── factory.py            # ProviderFactory + ProviderRegistry
 │       │   ├── openai_provider.py    # OpenAI / ChatGPT / GPT-4o
@@ -342,7 +341,7 @@ Brompt/
 │   ├── test_api.py                  # API endpoint tests
 │   └── ...                          # Feedback, retry, classifier, etc.
 ├── agent.brompt.yaml                # Declarative Runtime Manifest
-├── app.py                           # FastAPI application entry point
+├── app.py                           # Streamlit demo app (chat UI over PromptClient)
 ├── auto_detect.py                   # Auto-detection for task type / provider
 ├── modern_ui.py                     # Modern web-based user interface
 ├── templates.py                     # Additional prompt templates
@@ -500,12 +499,16 @@ Core runtime entry point. Loads YAML manifest and initializes all subsystems.
 
 ### `LLMProvider` (ABC)
 
-Base class for all providers. Implement `generate()` for sync, optionally `agenerate()` for async.
+Async base class for all providers (see `brompt.providers.base`).
 
 | Method | Returns | Description |
 |---|---|---|
-| `generate(messages, system=None)` | `str` | Call the LLM with bounded turn history |
-| `agenerate(messages, system=None)` | `str` | Async counterpart (optional) |
+| `generate(prompt, **kwargs)` | `ProviderResult` | Call the LLM; returns a typed result (text, model, tokens, outcome) |
+| `stream(prompt, **kwargs)` | `AsyncIterator[str]` | Stream response tokens incrementally |
+| `validate_api_key()` | `bool` | Verify the configured API key |
+
+> **Note:** the legacy `brompt.providers_core` module provides the sync
+> variants (with `agenerate()` for async).
 
 ### `SecurityEngine.sanitize(text)`
 
@@ -548,7 +551,7 @@ SHA-256 hash-chained, append-only audit log.
 | `replay(entry_hash, provider, system=None)` | `dict` | Re-run stored messages on a different provider |
 | `is_signed` | `bool` | `True` when the log was opened with a signing key |
 
-### `CircuitBreaker(failure_threshold=5, recovery_timeout=30.0, half_open_max_calls=3)`
+### `CircuitBreaker(failure_threshold=5, recovery_timeout=30.0, half_open_max_calls=1)`
 
 Protects providers from cascading failures with a CLOSED/OPEN/HALF_OPEN state machine.
 
@@ -556,16 +559,18 @@ Protects providers from cascading failures with a CLOSED/OPEN/HALF_OPEN state ma
 |---|---|---|---|
 | `failure_threshold` | `int` | `5` | Consecutive failures before opening the circuit |
 | `recovery_timeout` | `float` | `30.0` | Seconds before transitioning to HALF_OPEN |
-| `half_open_max_calls` | `int` | `3` | Probe requests allowed in HALF_OPEN state |
+| `half_open_max_calls` | `int` | `1` | Probe requests allowed in HALF_OPEN state |
 
 | Method | Returns | Description |
 |---|---|---|
 | `call(coro, fallback=None)` | `Any` | Async call; raises `CircuitBreakerOpenError` if open |
 | `call_sync(fn, args=(), kwargs={}, fallback=None)` | `Any` | Sync counterpart |
 
-### `ModelRouter(profiles=None, strategy=RoutingStrategy.CHEAPEST)`
+### `ModelRouter()`
 
 Routes prompts to the optimal provider based on complexity classification.
+Register providers with `register_provider(name, provider)`; providers must
+match a default profile (openai / anthropic / google / mistral / ollama) to be scored.
 
 | Method | Returns | Description |
 |---|---|---|
@@ -651,6 +656,8 @@ for entry in client.export_audit_trail():
 ```
 
 Compliance gates, in order: policy-as-code (deny rules by `caller_id`), air-gap probe (raises in `air_gapped` mode when outbound connectivity is detected), budget preflight (raises `BudgetExceededError`), then human review for sensitive patterns (`needs_approval` with `approve()` / `reject()`). Every gate, provider failure, approval, and rejection is itself audit-logged, so the trail covers both allowed and blocked executions.
+
+**Security on the Quick Start path:** every `prompt()` and `prompt_stream()` call first runs `SecurityEngine.sanitize` on the input — blocked inputs raise `SecurityViolationError` and are audit-logged as `security_denied` — and provider output is passed through `SecurityEngine.sanitize_output` before it reaches the caller. `PromptClient` therefore applies the same defense-in-depth as `BromptEngine`.
 
 Additional compliance affordances:
 
@@ -807,8 +814,8 @@ cb = CircuitBreaker(failure_threshold=3, recovery_timeout=60.0)
 
 try:
     response = await cb.call(
-        primary_provider.agenerate(messages),
-        fallback=await backup_provider.agenerate(messages)
+        primary_provider.generate(messages),
+        fallback=await backup_provider.generate(messages)
     )
 except CircuitBreakerOpenError:
     response = "All providers unavailable. Please try again later."
@@ -825,7 +832,7 @@ router.register_provider("fast", openai_provider)
 router.register_provider("quality", anthropic_provider)
 
 route = await router.route(query, strategy=RoutingStrategy.CHEAPEST)
-response = await route.provider.agenerate(messages)
+print(f"Routed to {route.provider}/{route.model} — est. ${route.estimated_cost:.4f}")
 ```
 
 ### Prompt Optimization
@@ -874,7 +881,7 @@ matrix:
 - ✅ **Budget enforcement** — in-process daily/per-request spend guardrails via `BudgetConfig`
 - ✅ **Air-gap guard** — optional `air_gapped` mode raises if outbound connectivity is detected (best-effort probe)
 - ✅ **Security guardrails** — multi-layer: canonicalization, regex blocklist, LLM classifier, output redaction
-- ✅ **Rate limiting** (in-process sliding window; distributed variant needs Redis)
+- ✅ **Rate limiting** (in-process sliding window + `RedisRateLimiter` for distributed deployments)
 - ✅ **Output sanitization** — redacts secret-like strings before reaching the caller
 
 ### Provider & Performance
@@ -900,7 +907,6 @@ matrix:
 
 - ⚠️ **Signed execution receipt serialization** — produce standalone `.receipt` files for external audit
 - ⚠️ **Deterministic replay CLI** — `brompt replay <audit-id> --model=X` with diff output (engine `replay()` exists; CLI command pending)
-- ⚠️ **Distributed rate limiting** — multi-instance Redis-backed rate limiter
 - ⚠️ **Cross-process budget ledger** — current `BudgetConfig` limits are enforced in-process only; a shared/atomic budget store is needed for multi-instance deployments
 
 ---

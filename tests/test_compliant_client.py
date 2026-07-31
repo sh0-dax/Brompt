@@ -6,8 +6,8 @@ import json
 import pytest
 
 from brompt import (
-    CompliantPromptClient,
     ComplianceMode,
+    CompliantPromptClient,
     HumanApprovalRequired,
     PolicyConfig,
     SensitivityLevel,
@@ -18,8 +18,8 @@ from brompt.config import (
     CacheConfig,
     ComplianceConfig,
     FeedbackConfig,
-    LogLevel,
     LoggingConfig,
+    LogLevel,
     ProviderConfig,
     ProviderType,
     WidgetConfig,
