@@ -56,7 +56,16 @@ from .ratelimit import RateLimiter, RateLimiterBackend, RateLimitExceededError, 
 from .router import ComplexityLevel, ModelRouter, RoutingStrategy
 from .security import SecurityEngine, SecurityViolationError
 from .session import Message, Session, SessionManager
-from .widget import BudgetExceededError, ComplianceError, CompliantPromptClient, HumanApprovalRequired, PromptClient, PromptResult, SignedExecutionResult, TamperDetectedError
+from .widget import (
+    BudgetExceededError,
+    ComplianceError,
+    CompliantPromptClient,
+    HumanApprovalRequired,
+    PromptClient,
+    PromptResult,
+    SignedExecutionResult,
+    TamperDetectedError,
+)
 
 try:
     from .feedback import FeedbackLoop, PromptOutcome
@@ -88,6 +97,7 @@ __all__ = [
     "GoogleProvider",
     "HooksManager",
     "HumanApprovalRequired",
+    "InMemoryRateLimitBackend",
     "InjectionClassifier",
     "LLMInjectionClassifier",
     "LLMProvider",
@@ -100,12 +110,12 @@ __all__ = [
     "OllamaProvider",
     "OpenAIProvider",
     "PendingReviewError",
+    "PolicyConfig",
     "PolicyEngine",
     "PolicyRule",
     "PolicyViolationError",
     "PromptClient",
     "PromptResult",
-    "PolicyConfig",
     "ProviderConfig",
     "ProviderFactory",
     "ProviderRegistry",
@@ -118,7 +128,6 @@ __all__ = [
     "RateLimiterBackend",
     "RedisRateLimitBackend",
     "RedisRateLimiter",
-    "InMemoryRateLimitBackend",
     "RoutingStrategy",
     "SecurityEngine",
     "SecurityHook",
@@ -129,12 +138,12 @@ __all__ = [
     "SessionManager",
     "SignedExecutionResult",
     "Span",
+    "TamperDetectedError",
     "Template",
     "TemplateRegistry",
     "Tier",
     "TimingHook",
     "Tracer",
-    "TamperDetectedError",
     "ValidationHook",
     "WidgetConfig",
     "alert_manager",

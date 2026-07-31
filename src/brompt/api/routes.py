@@ -4,6 +4,7 @@ Uses ``app.state`` to hold shared dependencies instead of module-level
 globals, making the app testable with ``TestClient``.
 """
 
+import hmac
 import logging
 import os
 import time
@@ -28,7 +29,22 @@ from .schemas import (
 
 logger = logging.getLogger("brompt.api")
 
-API_KEY = os.getenv("BROMPT_API_KEY", "")
+
+def _api_key() -> str:
+    """Read ``BROMPT_API_KEY`` per-request so rotation takes effect immediately."""
+    return os.getenv("BROMPT_API_KEY", "")
+
+
+def _cors_origins() -> list[str]:
+    """Allowed CORS origins from ``BROMPT_CORS_ORIGINS`` (comma-separated).
+
+    Defaults to local Streamlit/dev origins.  ``"*"`` is permitted only when
+    credentials are disabled — see ``create_app``.
+    """
+    raw = os.getenv("BROMPT_CORS_ORIGINS", "").strip()
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    return ["http://localhost:8501", "http://127.0.0.1:8501"]
 
 
 def _load_engine_config() -> WidgetConfig:
@@ -44,12 +60,14 @@ def _load_engine_config() -> WidgetConfig:
 def verify_api_key(request: Request) -> None:
     """Dependency: reject requests missing or with invalid API key.
 
-    Skipped when ``BROMPT_API_KEY`` is not set (development mode).
+    Skipped when ``BROMPT_API_KEY`` is not set (development mode).  The key
+    is compared in constant time to avoid timing attacks.
     """
-    if not API_KEY:
+    key = _api_key()
+    if not key:
         return
     auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer ") and auth[7:] == API_KEY:
+    if auth.startswith("Bearer ") and hmac.compare_digest(auth[7:], key):
         return
     raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
@@ -94,10 +112,11 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
     )
 
+    origins = _cors_origins()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=origins,
+        allow_credentials="*" not in origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )

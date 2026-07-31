@@ -2,31 +2,32 @@
 Brompt — Multi-tab AI Control Center with token optimization, auto-detect, and runtime dashboard.
 """
 
-import sys
-import os
-import time as time_module
 import hashlib
+import os
+import sys
+import time as time_module
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 import streamlit as st
-from templates import format_prompt, get_system_prompt, list_templates
-from auto_detect import auto_detect_agent
-from modern_ui import (
-    inject_design_system, render_hero_section,
-    render_savings_badge, render_cached_badge, render_detection_badge,
-    render_progress_bar, render_card,
-    show_success_toast, show_error_toast, show_info_toast, show_savings_toast,
-    render_runtime_status_bar, render_execution_trace,
-    render_provider_card, render_audit_entries, render_security_status,
-    render_stat_row,
-)
 
-from brompt.config import WidgetConfig, ProviderConfig, ProviderType
-from brompt.widget import PromptClient
-from brompt.pricing import estimate_cost
+from auto_detect import auto_detect_agent
+from brompt.config import ProviderConfig, ProviderType, WidgetConfig
 from brompt.optimizer import TokenOptimizer
+from brompt.widget import PromptClient
+from modern_ui import (
+    inject_global_css,
+    render_audit_entry,
+    render_page_header,
+    render_security_summary,
+    render_status_badge,
+    render_topbar,
+    render_trace_pipeline,
+    show_error_toast,
+    show_success_toast,
+)
+from templates import get_system_prompt
 
 st.set_page_config(
     page_title="Brompt | محرك الذكاء الاصطناعي",
@@ -61,7 +62,7 @@ LANG = {
     "context_messages": "عدد رسائل السياق",
 }
 
-inject_design_system()
+inject_global_css()
 
 if "widget" not in st.session_state:
     st.session_state.widget = None
@@ -299,12 +300,10 @@ hist = st.session_state.execution_history
 if hist:
     avg_lat = sum(e["latency_ms"] for e in hist) / len(hist)
 
-render_runtime_status_bar(
-    online=has_widget,
-    provider=current_provider_name,
-    model=current_model,
-    latency_ms=avg_lat,
-    secure=has_widget,
+render_topbar(
+    page_name="Brompt",
+    status="online" if has_widget else "offline",
+    provider=f"{current_provider_name} · {current_model}",
 )
 
 # --- Tabs ---
@@ -320,11 +319,14 @@ tab_overview, tab_playground, tab_security, tab_audit, tab_metrics = st.tabs([
 # ====== OVERVIEW TAB ======
 
 with tab_overview:
-    render_hero_section(
-        total_requests=len(hist),
-        tokens_saved=st.session_state.total_saved,
-        cost_saved=st.session_state.get("total_cost_saved", 0.0),
-        active_template=st.session_state.get("template_name", "default"),
+    render_page_header(
+        title="📊 Overview",
+        subtitle=(
+            f"{len(hist)} requests · {st.session_state.total_saved:,} tokens saved · "
+            f"${st.session_state.get('total_cost_saved', 0.0):.4f} cost saved · "
+            f"template: {st.session_state.get('template_name', 'default')}"
+        ),
+        actions=None,
     )
 
     if has_widget:
@@ -451,10 +453,10 @@ with tab_playground:
                     st.markdown(result.response)
 
                 if result.tokens_saved > 0:
-                    render_savings_badge(result.tokens_saved, result.cost_saved)
-                    show_savings_toast(result.tokens_saved, result.savings_percent)
+                    render_status_badge(f"Saved {result.tokens_saved} tokens", "online")
+                    show_success_toast(f"Saved {result.tokens_saved} tokens ({result.savings_percent}%)")
                 if result.cached:
-                    render_cached_badge()
+                    render_status_badge("Cached response", "protected")
                 if result.auto_detected and result.detected_task:
                     st.caption(f"🧠 {result.detected_task}")
 
@@ -482,7 +484,7 @@ with tab_playground:
         trace = st.session_state.last_trace
         if trace:
             stages, total_ms = trace
-            render_execution_trace(stages, total_ms)
+            render_trace_pipeline(stages, total_ms)
         else:
             st.markdown('<div style="color:var(--muted);font-size:0.78rem;padding-top:8px">Awaiting execution...</div>', unsafe_allow_html=True)
 
@@ -511,11 +513,11 @@ with tab_security:
 
     events_for_sec = _gen_sec_events(hist)
 
-    render_security_status(
+    render_security_summary(
         blocked=blocked_count,
-        sanitized=sanitized_count,
+        redacted=sanitized_count,
         rate_limited=rate_limited_count,
-        events=events_for_sec[-6:],
+        total_events=len(events_for_sec),
     )
 
     if hist:
@@ -533,7 +535,8 @@ with tab_audit:
     st.markdown('<div style="font-size:0.85rem;font-weight:600;color:var(--text);margin-bottom:8px">Execution Audit Log</div>', unsafe_allow_html=True)
 
     entries = _gen_audit_entries(hist)
-    render_audit_entries(entries)
+    for entry in entries[:20]:
+        render_audit_entry(entry)
 
     if entries:
         st.caption(f"Showing last {min(len(entries), 20)} of {len(entries)} total entries")
@@ -582,7 +585,8 @@ with tab_metrics:
             total_actual = df["prompt_tokens"].sum() if "prompt_tokens" in df.columns else 0
             used_limit = max(total_actual, 1)
             ctx_limit = max(total_plain + 1000, used_limit)
-            render_progress_bar(int(used_limit), int(ctx_limit), "Context Window")
+            st.caption(f"Context Window: {int(used_limit):,} / {int(ctx_limit):,} tokens")
+            st.progress(min(used_limit / max(ctx_limit, 1), 1.0))
 
             if st.session_state.total_saved > 0:
                 st.metric("Tokens Saved", f"{st.session_state.total_saved:,}")

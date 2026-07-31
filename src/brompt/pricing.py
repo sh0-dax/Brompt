@@ -38,15 +38,61 @@ PRICING_REGISTRY: dict[str, dict[str, float]] = {
 }
 
 
+# ── provider-name aliases ────────────────────────────────────────────────────
+# Map provider class names (and common aliases) to registry key families.
+_PROVIDER_ALIASES: dict[str, str] = {
+    "openai": "openai",
+    "azureopenai": "azure",
+    "azure": "azure",
+    "anthropic": "anthropic",
+    "claude": "anthropic",
+    "google": "gemini",
+    "gemini": "gemini",
+    "ollama": "ollama",
+    "lmstudio": "lmstudio",
+    "mistral": "mistral",
+    "local": "local",
+}
+
+
+def _normalize_provider(name: str) -> str:
+    """Normalize a provider name/class to its registry key family.
+
+    Handles ``OpenAIProvider`` -> ``openai``, ``AsyncAnthropicProvider`` ->
+    ``anthropic``, ``AzureOpenAIProvider`` -> ``azure``, ``gemini/gemini-2.5-flash``
+    -> ``gemini``, and ``FakeProvider`` -> ``fake``.
+    """
+    lowered = name.lower().strip()
+    if lowered.startswith("async"):
+        lowered = lowered[len("async"):]
+    if lowered.endswith("provider"):
+        lowered = lowered[:-len("provider")]
+    lowered = lowered.split("/", 1)[0].strip()
+    return _PROVIDER_ALIASES.get(lowered, lowered)
+
+
 def _lookup_model(provider: str, model: str) -> dict[str, float]:
-    """Find pricing by ``provider/model`` key, falling back to provider-only."""
-    key = f"{provider.lower()}/{model.lower()}"
+    """Find pricing by ``provider/model`` key, falling back to provider-only,
+    bare-model, and provider-as-model lookups."""
+    norm_provider = _normalize_provider(provider)
+    model_lower = model.lower()
+
+    key = f"{norm_provider}/{model_lower}" if norm_provider else model_lower
     if key in PRICING_REGISTRY:
         return PRICING_REGISTRY[key]
-    prov_key = provider.lower()
-    for k, rates in PRICING_REGISTRY.items():
-        if k.startswith(prov_key + "/"):
-            return rates
+
+    if norm_provider:
+        for k, rates in PRICING_REGISTRY.items():
+            if k.startswith(norm_provider + "/"):
+                return rates
+
+    for candidate in (model_lower, norm_provider):
+        if not candidate or candidate == "default":
+            continue
+        for k, rates in PRICING_REGISTRY.items():
+            if k.endswith("/" + candidate):
+                return rates
+
     return {"input": 0.0, "output": 0.0, "cached_input": 0.0, "cache_write": 0.0}
 
 

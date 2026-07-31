@@ -15,9 +15,10 @@ from .audit import AuditLog
 from .config import BudgetConfig, ComplianceConfig, PolicyConfig, ProviderConfig, WidgetConfig
 from .optimizer import TokenOptimizer
 from .policy import PolicyEngine, PolicyRule, PolicyViolationError
-from .pricing import estimate_cost
+from .pricing import _normalize_provider, estimate_cost
 from .providers import LLMProvider, ProviderFactory
 from .router import ModelRouter
+from .security import SecurityEngine, SecurityViolationError
 from .session import Session, SessionManager
 
 try:
@@ -48,7 +49,7 @@ class BudgetExceededError(ComplianceError):
     """Raised when a request would exceed the configured cost budget."""
 
 
-class HumanApprovalRequired(ComplianceError):
+class HumanApprovalRequired(ComplianceError):  # noqa: N818 - documented public API name
     """Raised when a request requires human approval (human-in-the-loop)."""
 
 
@@ -61,6 +62,11 @@ def _task_type_str(task_type) -> Optional[str]:
     return str(task_type)
 
 logger = logging.getLogger(__name__)
+
+# Map normalized provider families onto ModelRouter's default profile names.
+_ROUTER_PROFILE_NAMES = {
+    "gemini": "google",
+}
 
 
 @dataclass
@@ -452,6 +458,11 @@ class PromptClient:
         self._router: Optional[ModelRouter] = None
         if self.config.routing.enabled:
             self._router = ModelRouter()
+            router_name = _ROUTER_PROFILE_NAMES.get(
+                _normalize_provider(self._provider.__class__.__name__),
+                _normalize_provider(self._provider.__class__.__name__),
+            )
+            self._router.register_provider(router_name, self._provider)
 
         if self._cache_enabled and self.config.cache.enabled:
             redis_url = self.config.cache.redis_url or os.getenv("BROMPT_REDIS_URL")
@@ -524,6 +535,12 @@ class PromptClient:
         template = template or self.config.default_template
         start_time = time.time()
         execution_id = uuid.uuid4().hex[:16]
+        try:
+            user_input = SecurityEngine.sanitize(user_input)
+        except SecurityViolationError as exc:
+            self._record_event("security_denied", execution_id, False, user_input, detail=str(exc))
+            self._stats["errors"] += 1
+            raise
 
         if self._policy is not None:
             try:
@@ -612,6 +629,7 @@ class PromptClient:
                 **generation_kwargs,
             }
             provider_result = await self._provider.generate(generated_prompt, **gen_params)
+            provider_result.text = SecurityEngine.sanitize_output(provider_result.text)
             latency_ms = (time.time() - start_time) * 1000
             prompt_tokens = provider_result.prompt_tokens or len(generated_prompt) // 4
             completion_tokens = provider_result.completion_tokens or provider_result.tokens_used
@@ -714,6 +732,11 @@ class PromptClient:
             raise RuntimeError("Streaming is not enabled")
         template = template or self.config.default_template
         execution_id = uuid.uuid4().hex[:16]
+        try:
+            user_input = SecurityEngine.sanitize(user_input)
+        except SecurityViolationError as exc:
+            self._record_event("security_denied", execution_id, False, user_input, detail=str(exc))
+            raise
         if self._policy is not None:
             self._policy.check(caller_id)
         generated_prompt = self._build_prompt(
@@ -723,13 +746,14 @@ class PromptClient:
         async for chunk in self._provider.stream(generated_prompt, **generation_kwargs):
             full_response.append(chunk)
             yield chunk
+        redacted_response = SecurityEngine.sanitize_output("".join(full_response))
         self._record_event("stream", execution_id, True, generated_prompt,
-                           detail="".join(full_response))
+                           detail=redacted_response)
         if session_id:
             session = self._sessions.get_session(session_id)
             if session:
                 session.add_message("user", user_input)
-                session.add_message("assistant", "".join(full_response))
+                session.add_message("assistant", redacted_response)
 
     def create_session(
         self, template_id: Optional[str] = None, system_prompt: Optional[str] = None, **metadata,
@@ -867,6 +891,7 @@ class PromptClient:
 
         start_time = time.time()
         provider_result = await provider.generate(prompt_text, system=system_prompt)
+        provider_result.text = SecurityEngine.sanitize_output(provider_result.text)
         latency_ms = (time.time() - start_time) * 1000
         new_execution_id = uuid.uuid4().hex[:16]
         result = self._make_result(

@@ -31,6 +31,7 @@ class AuditLog:
         self._hmac_key: bytes | None = None
         if secret_key is not None:
             self._hmac_key = hashlib.sha256(secret_key.encode("utf-8")).digest()
+        self._tail_cache: tuple[int, str] | None = None
 
     @property
     def is_signed(self) -> bool:
@@ -38,8 +39,16 @@ class AuditLog:
         return self._hmac_key is not None
 
     def _last_hash(self) -> str:
+        # Fast path: when the file size matches the last write we observed,
+        # reuse the cached tail hash instead of re-reading the whole log
+        # (record() would otherwise be O(N) per write).
+        cached = self._tail_cache
+        size = self.path.stat().st_size
+        if cached is not None and cached[0] == size:
+            return cached[1]
         last = GENESIS_HASH
-        if self.path.stat().st_size == 0:
+        if size == 0:
+            self._tail_cache = (0, last)
             return last
         with open(self.path, "r", encoding="utf-8") as f:
             for line in f:
@@ -47,6 +56,7 @@ class AuditLog:
                 if not line:
                     continue
                 last = json.loads(line)["entry_hash"]
+        self._tail_cache = (size, last)
         return last
 
     @staticmethod
@@ -89,6 +99,7 @@ class AuditLog:
                 record["hmac"] = sig
             with open(self.path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self._tail_cache = (self.path.stat().st_size, entry_hash)
             return record
 
     def verify(self) -> bool:
@@ -205,7 +216,7 @@ class AuditLog:
         msgs = entry.get("messages")
         if not msgs:
             return {"error": "Entry has no stored messages; cannot replay"}
-        from .providers_core import ProviderResult
+        from .providers.base import ProviderResult
         if fn is not None:
             text = fn(msgs, system=system)
         else:
