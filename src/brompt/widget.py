@@ -12,7 +12,7 @@ from threading import Lock
 from typing import AsyncIterator, Optional
 
 from .audit import AuditLog
-from .config import ComplianceConfig, ProviderConfig, WidgetConfig
+from .config import BudgetConfig, ComplianceConfig, PolicyConfig, ProviderConfig, WidgetConfig
 from .optimizer import TokenOptimizer
 from .policy import PolicyEngine, PolicyRule, PolicyViolationError
 from .pricing import estimate_cost
@@ -187,6 +187,26 @@ class PromptResult:
             f"tokens={self.prompt_tokens}in/{self.completion_tokens}out, "
             f"latency={self.latency_ms:.0f}ms{saved_tag})"
         )
+
+
+@dataclass
+class SignedExecutionResult(PromptResult):
+    """A :class:`PromptResult` that carries audit proof.
+
+    Produced by :class:`CompliantPromptClient` — same fields as
+    ``PromptResult`` plus the ``audit_hash`` / ``audit_chain_id`` /
+    ``tamper_check`` / ``signed_at`` proof stamped by ``_attach_proof``.
+    """
+
+    @property
+    def verified(self) -> bool:
+        """``True`` when the proof is present and the chain verified clean."""
+        return self.tamper_check is True
+
+    @property
+    def receipt(self) -> Optional[str]:
+        """Alias for the audit hash, for receipt-style callers."""
+        return self.audit_hash
 
 
 class LRUCache:
@@ -598,7 +618,7 @@ class PromptClient:
             plain_prompt_tokens = len(user_input) // 4
             cost = estimate_cost(self._provider.__class__.__name__, prompt_tokens, completion_tokens)
             plain_cost = estimate_cost(self._provider.__class__.__name__, plain_prompt_tokens, completion_tokens)
-            result = PromptResult(
+            result = self._make_result(
                 user_input=user_input,
                 generated_prompt=generated_prompt,
                 response=provider_result.text,
@@ -849,7 +869,7 @@ class PromptClient:
         provider_result = await provider.generate(prompt_text, system=system_prompt)
         latency_ms = (time.time() - start_time) * 1000
         new_execution_id = uuid.uuid4().hex[:16]
-        result = PromptResult(
+        result = self._make_result(
             user_input=prompt_text,
             generated_prompt=prompt_text,
             response=provider_result.text,
@@ -998,7 +1018,7 @@ class PromptClient:
         }
         self._record_event("human_approval_required", execution_id, False,
                            user_input, detail=f"approval_id={approval_id}")
-        return PromptResult(
+        return self._make_result(
             user_input=user_input,
             generated_prompt="",
             response="",
@@ -1125,6 +1145,14 @@ class PromptClient:
         }
         return builtin_templates.get(template_id, builtin_templates["default"])
 
+    def _make_result(self, **kwargs) -> PromptResult:
+        """Construct the result object for this client.
+
+        Subclasses may override to return a richer result type (e.g.
+        :class:`SignedExecutionResult`).
+        """
+        return PromptResult(**kwargs)
+
     def __repr__(self) -> str:
         return (
             f"PromptClient(model='{self.config.provider.model}', "
@@ -1132,6 +1160,64 @@ class PromptClient:
             f"cache={len(self._cache) if self._cache else 0}, "
             f"saved_tokens={self._total_saved_tokens}, "
             f"opt={self._token_optimization_enabled})"
+        )
+
+
+class CompliantPromptClient(PromptClient):
+    """Policy-driven :class:`PromptClient` returning :class:`SignedExecutionResult`.
+
+    Wraps :class:`~brompt.config.PolicyConfig` (per-tenant YAML/JSON policy)
+    into the engine-level ``ComplianceConfig`` and returns proof-carrying
+    ``SignedExecutionResult`` objects from ``prompt()`` / ``replay()``.
+    """
+
+    def __init__(
+        self,
+        config: Optional[WidgetConfig] = None,
+        policy: Optional[PolicyConfig] = None,
+        enable_token_optimization: bool = True,
+        enable_cache: bool = True,
+        enable_auto_detect: bool = False,
+        enable_streaming: bool = True,
+        audit_log_path: Optional[str] = None,
+    ):
+        self.policy = policy
+        compliance = policy.to_compliance_config() if policy is not None else None
+        audit_secret = policy.get_signing_key() if policy is not None else None
+        super().__init__(
+            config=config,
+            enable_token_optimization=enable_token_optimization,
+            enable_cache=enable_cache,
+            enable_auto_detect=enable_auto_detect,
+            enable_streaming=enable_streaming,
+            audit_log_path=audit_log_path,
+            audit_secret_key=audit_secret,
+            compliance=compliance,
+        )
+
+    @property
+    def mode(self) -> str:
+        """Effective compliance mode (``"standard"``/``"air_gapped"``/``"strict"``)."""
+        return self._compliance.mode
+
+    @property
+    def budget(self) -> Optional[BudgetConfig]:
+        """The active in-process budget ledger, if compliance is enabled."""
+        return self._budget
+
+    @property
+    def audit(self) -> Optional[AuditLog]:
+        """The bound audit log (alias of :attr:`audit_log`)."""
+        return self._audit
+
+    def _make_result(self, **kwargs) -> SignedExecutionResult:
+        return SignedExecutionResult(**kwargs)
+
+    def __repr__(self) -> str:
+        tenant = self.policy.tenant_id if self.policy is not None else "default"
+        return (
+            f"CompliantPromptClient(tenant='{tenant}', mode='{self._compliance.mode}', "
+            f"entries={len(self._audit.read_all()) if self._audit else 0})"
         )
 
 

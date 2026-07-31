@@ -661,6 +661,40 @@ Additional compliance affordances:
 - **`BudgetConfig`** — owns the in-process ledger (`daily_spent`, `request_count`) with `check_budget()`, `add_cost()`, `get_alert_level()` and `to_dict()`; budget enforcement remains in-process only (see Roadmap).
 - All compliance errors (`BudgetExceededError`, `TamperDetectedError`, `HumanApprovalRequired`) share the `ComplianceError` base class.
 
+#### Policy-driven surface: `CompliantPromptClient`, `PolicyConfig`, `SignedExecutionResult`
+
+For per-tenant policy files and proof-typed results, use the policy-driven surface on top of `PromptClient`:
+
+```python
+from brompt import CompliantPromptClient, PolicyConfig, ComplianceMode, SensitivityLevel
+
+policy = PolicyConfig.from_yaml("policy.yaml")   # or from_json / to_yaml
+client = CompliantPromptClient(policy=policy, audit_log_path="logs/audit.log")
+
+result = await client.prompt("Approve transfer of $1000")
+assert isinstance(result, SignedExecutionResult)
+assert result.verified            # tamper_check is True
+assert result.receipt             # == audit_hash
+```
+
+- **`PolicyConfig`** — standalone per-tenant policy: `tenant_id`, `mode` (`ComplianceMode`), `sensitivity` (`SensitivityLevel`), `budget` (`BudgetConfig`), `human_review_patterns`, `human_review_action`, `policy_rules`/`policy_path`, `signing_key` (defaults to a deterministic per-tenant key via `get_signing_key()`), `data_residency`. Loads/saves YAML & JSON; `to_compliance_config()` bridges it to the engine-level `ComplianceConfig`.
+- **`CompliantPromptClient`** — `PromptClient` subclass that drives behaviour from a `PolicyConfig` and returns `SignedExecutionResult` from `prompt()`/`replay()`. Aliases: `.audit` (= `.audit_log`), `.budget` (active ledger), `.mode`. All existing `PromptClient` methods (`approve`, `reject`, `verify_execution`, `export_audit_trail`, `get_compliance_report`, `replay`) work unchanged.
+- **`SignedExecutionResult`** — `PromptResult` subclass typed for audit proof, with `verified` (`tamper_check is True`) and `receipt` (= `audit_hash`) conveniences.
+
+```yaml
+# policy.yaml
+tenant_id: acme-finance
+mode: strict
+sensitivity: high
+budget:
+  max_daily_cost: 50.0
+  max_per_request: 5.0
+human_review_patterns: [transfer, refund]
+human_review_action: raise
+data_residency: eu
+signing_key: change-me
+```
+
 ### Template Engine
 
 ```python

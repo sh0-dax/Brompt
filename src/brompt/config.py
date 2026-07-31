@@ -1,5 +1,6 @@
 """Centralised configuration — WidgetConfig with validation."""
 
+import json
 import os
 from dataclasses import dataclass, field
 from enum import Enum
@@ -196,6 +197,134 @@ class ComplianceConfig:
     def __post_init__(self):
         if self.human_review_action not in ("return", "raise"):
             raise ValueError("human_review_action must be 'return' or 'raise'")
+
+
+class ComplianceMode(str, Enum):
+    """Compliance operating modes."""
+
+    STANDARD = "standard"      # audit + signing
+    AIR_GAPPED = "air_gapped"  # no outbound network
+    STRICT = "strict"          # audit + signing + human review
+
+
+class SensitivityLevel(str, Enum):
+    """Content sensitivity tiers (informational; HIGH/CRITICAL prefer review)."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"      # prefer human-in-the-loop
+    CRITICAL = "critical"  # always human-in-the-loop
+
+
+@dataclass
+class PolicyConfig:
+    """Standalone per-tenant compliance policy.
+
+    A higher-level, tenant-scoped view of :class:`ComplianceConfig`.
+    ``CompliantPromptClient`` converts it via :meth:`to_compliance_config`.
+    """
+
+    tenant_id: str = "default"
+    mode: ComplianceMode = ComplianceMode.STANDARD
+    sensitivity: SensitivityLevel = SensitivityLevel.MEDIUM
+    budget: BudgetConfig = field(default_factory=BudgetConfig)
+    human_review_patterns: list[str] = field(default_factory=list)
+    human_review_action: str = "return"
+    policy_rules: list[dict] = field(default_factory=list)
+    policy_path: Optional[str] = None
+    signing_key: Optional[str] = None
+    data_residency: Optional[str] = None
+
+    def __post_init__(self):
+        if self.human_review_action not in ("return", "raise"):
+            raise ValueError("human_review_action must be 'return' or 'raise'")
+        if not isinstance(self.mode, ComplianceMode):
+            self.mode = ComplianceMode(self.mode)
+        if not isinstance(self.sensitivity, SensitivityLevel):
+            self.sensitivity = SensitivityLevel(self.sensitivity)
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> "PolicyConfig":
+        """Load a policy from a YAML file (enum strings are coerced)."""
+        import yaml
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        return cls._from_mapping(data)
+
+    @classmethod
+    def from_json(cls, path: str | Path) -> "PolicyConfig":
+        """Load a policy from a JSON file (enum strings are coerced)."""
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return cls._from_mapping(data)
+
+    @classmethod
+    def _from_mapping(cls, data: dict) -> "PolicyConfig":
+        allowed = set(cls.__dataclass_fields__)
+        kwargs = {k: v for k, v in data.items() if k in allowed}
+        if "budget" in kwargs and isinstance(kwargs["budget"], dict):
+            budget_fields = set(BudgetConfig.__dataclass_fields__)
+            kwargs["budget"] = BudgetConfig(
+                **{k: v for k, v in kwargs["budget"].items() if k in budget_fields}
+            )
+        return cls(**kwargs)
+
+    def to_yaml(self, path: str | Path) -> None:
+        """Persist the policy to YAML."""
+        import yaml
+        payload = self.to_dict()
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.dump(payload, f, default_flow_style=False, sort_keys=False)
+
+    def to_dict(self) -> dict:
+        """Serialize the policy (enums as strings) for storage/export."""
+        return {
+            "tenant_id": self.tenant_id,
+            "mode": self.mode.value,
+            "sensitivity": self.sensitivity.value,
+            "budget": self.budget.to_dict(),
+            "human_review_patterns": list(self.human_review_patterns),
+            "human_review_action": self.human_review_action,
+            "policy_rules": list(self.policy_rules),
+            "policy_path": self.policy_path,
+            "signing_key": self.signing_key,
+            "data_residency": self.data_residency,
+        }
+
+    def needs_human_review(self, message: str) -> bool:
+        """``True`` when *message* is sensitive per this policy."""
+        if self.sensitivity in (SensitivityLevel.HIGH, SensitivityLevel.CRITICAL):
+            return True
+        lowered = message.lower()
+        return any(p.lower() in lowered for p in self.human_review_patterns)
+
+    def get_signing_key(self) -> str:
+        """The configured signing key, or a deterministic per-tenant default."""
+        if self.signing_key:
+            return self.signing_key
+        import hashlib
+        return hashlib.sha256(f"brompt:{self.tenant_id}".encode()).hexdigest()
+
+    def to_compliance_config(self) -> ComplianceConfig:
+        """Bridge to the engine-level :class:`ComplianceConfig`."""
+        return ComplianceConfig(
+            enabled=True,
+            mode=self.mode.value,
+            budget=BudgetConfig(
+                max_daily_cost=self.budget.max_daily_cost,
+                max_per_request=self.budget.max_per_request,
+                alert_threshold=self.budget.alert_threshold,
+                enabled=self.budget.enabled,
+                daily_spent=self.budget.daily_spent,
+                request_count=self.budget.request_count,
+            ),
+            human_review_patterns=list(self.human_review_patterns),
+            human_review_action=self.human_review_action,
+            policy_rules=list(self.policy_rules),
+            policy_path=self.policy_path,
+            signing_key=self.get_signing_key(),
+            data_residency=self.data_residency,
+        )
 
 
 @dataclass
