@@ -60,7 +60,7 @@ jobs:
         run: pytest -v --tb=short --cov=src/brompt --cov-report=xml --cov-fail-under=50
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
