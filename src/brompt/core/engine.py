@@ -1,6 +1,7 @@
 """Core Runtime Execution Logic."""
 
 import asyncio
+import hashlib
 import logging
 import os
 import time
@@ -35,6 +36,7 @@ class BromptEngine:
         async_provider: LLMProvider | None = None,
         audit_log_path: str | None = None,
         audit_secret_key: str | None = None,
+        audit_signing_key: str | None = None,
         rate_limiter: RateLimiterBackend | None = None,
         injection_classifier: InjectionClassifier | None = None,
         circuit_breaker: CircuitBreaker | None = None,
@@ -76,6 +78,7 @@ class BromptEngine:
         self.audit = AuditLog(
             audit_log_path or str(manifest_file.parent / f"{manifest_file.stem}.audit.log"),
             secret_key=audit_secret_key or os.getenv("BROMPT_AUDIT_SECRET"),
+            signing_key=audit_signing_key or os.getenv("BROMPT_AUDIT_SIGNING_KEY"),
         )
         self.state_id = f"state_{uuid.uuid4().hex[:8]}"
         self._last_latency_ms = 0.0
@@ -208,7 +211,13 @@ class BromptEngine:
                 else:
                     reply = self.provider.generate(messages_to_send, system=system_prompt)
                 self._last_latency_ms = (time.time() - t0) * 1000
-                reply = SecurityEngine.sanitize_output(reply)
+                reply, redactions = SecurityEngine.redact_with_metadata(reply)
+                if redactions:
+                    self.audit.record(
+                        "output_redacted", self.state_id, True,
+                        detail=", ".join(redactions),
+                        latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
+                    )
                 self.memory.add_turn("assistant", reply)
                 output_payload["llm_response"] = reply
                 output_payload["provider_used"] = True
@@ -295,7 +304,13 @@ class BromptEngine:
             )
 
         if reply is not None:
-            reply = SecurityEngine.sanitize_output(reply)
+            reply, redactions = SecurityEngine.redact_with_metadata(reply)
+            if redactions:
+                self.audit.record(
+                    "output_redacted", self.state_id, True,
+                    detail=", ".join(redactions),
+                    latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
+                )
             self.memory.add_turn("assistant", reply)
             output_payload["llm_response"] = reply
             output_payload["provider_used"] = True
@@ -329,4 +344,17 @@ class BromptEngine:
         -------
         A dict with keys ``original`` and ``replayed``.
         """
-        return self.audit.replay(entry_hash, provider or self.provider, system=system)
+        result = self.audit.replay(entry_hash, provider or self.provider, system=system)
+        if "error" in result:
+            return result
+        replayed = result["replayed"]
+        text = getattr(replayed, "text", "")
+        self.audit.record(
+            "replay_executed", self.state_id, True,
+            detail=f"original_hash={entry_hash} "
+                   f"replayed_hash={hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}",
+            latency_ms=getattr(replayed, "latency_ms", None),
+            tokens_used=getattr(replayed, "tokens_used", 0),
+            messages=result["original"].get("messages"),
+        )
+        return result

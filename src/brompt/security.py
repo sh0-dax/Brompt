@@ -144,6 +144,19 @@ class SecurityEngine:
             SecurityViolationError: If input matches a blocked pattern.
             ValueError: If input is empty or exceeds size limit.
         """
+        clean, _metadata = cls.sanitize_with_metadata(text, max_payload_size_kb)
+        return clean
+
+    @classmethod
+    def sanitize_with_metadata(cls, text: str, max_payload_size_kb: int = 64) -> tuple[str, list[str]]:
+        """Like :meth:`sanitize` but returns ``(clean_text, metadata)``.
+
+        *metadata* lists the non-blocking normalizations that were applied
+        (``canonicalized``, ``zero_width_stripped``, ``leetspeak_normalized``)
+        so callers can record forensic detail in the audit log.  Blocking
+        violations still raise :class:`SecurityViolationError` (the reason is
+        embedded in the message).
+        """
         if not text or not text.strip():
             raise ValueError("Invalid Input: Payload cannot be empty.")
 
@@ -154,13 +167,20 @@ class SecurityEngine:
                 f"Payload violation: Size {payload_bytes} bytes exceeds limit of {max_bytes} bytes."
             )
 
+        metadata: list[str] = []
         normalized = cls._canonicalize(text)
+        if normalized != text:
+            metadata.append("canonicalized")
+        if any(chr(c) in text for c in _ZERO_WIDTH_CHARS):
+            metadata.append("zero_width_stripped")
 
         if cls._detect_base64(normalized):
             logger.warning("Security violation: Base64-encoded payload detected")
             raise SecurityViolationError("Security Violation: [Base64-encoded payload detected]")
 
         normalized_for_regex = cls._normalize_for_regex(normalized)
+        if normalized_for_regex != normalized:
+            metadata.append("leetspeak_normalized")
 
         for pattern, reason in cls.INJECTION_PATTERNS:
             if re.search(pattern, normalized_for_regex, re.IGNORECASE):
@@ -177,16 +197,30 @@ class SecurityEngine:
                     f"Security Violation: [LLM classifier — {result.reasoning}]"
                 )
 
-        return normalized.strip()
+        return normalized.strip(), metadata
 
     @classmethod
     def sanitize_output(cls, text: str) -> str:
         """Redacts secret-like content from model output before it reaches the caller."""
+        redacted, _redactions = cls.redact_with_metadata(text)
+        return redacted
+
+    @classmethod
+    def redact_with_metadata(cls, text: str) -> tuple[str, list[str]]:
+        """Like :meth:`sanitize_output` but returns ``(redacted, redactions)``.
+
+        *redactions* lists the type of each secret-like pattern that was
+        replaced (e.g. ``"Anthropic API key"``), so callers can record
+        exactly what was hidden in the audit log.
+        """
         if not text:
-            return text
+            return text, []
         redacted = text
+        redactions: list[str] = []
         for pattern, reason in cls.OUTPUT_LEAK_PATTERNS:
             if re.search(pattern, redacted):
-                logger.warning("Output redaction: %s", reason)
+                redactions.append(reason)
                 redacted = re.sub(pattern, "[REDACTED]", redacted)
-        return redacted
+        if redactions:
+            logger.warning("Output redaction: %s", ", ".join(redactions))
+        return redacted, redactions

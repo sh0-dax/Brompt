@@ -224,7 +224,7 @@ class LRUCache:
 
     def _make_key(self, user_input: str, template: str, context: Optional[dict]) -> str:
         data = f"{user_input}|{template}|{json.dumps(context or {}, sort_keys=True)}"
-        return hashlib.md5(data.encode()).hexdigest()
+        return hashlib.md5(data.encode(), usedforsecurity=False).hexdigest()
 
     def get(self, user_input: str, template: str, context: Optional[dict] = None) -> Optional[PromptResult]:
         key = self._make_key(user_input, template, context)
@@ -629,7 +629,7 @@ class PromptClient:
                 **generation_kwargs,
             }
             provider_result = await self._provider.generate(generated_prompt, **gen_params)
-            provider_result.text = SecurityEngine.sanitize_output(provider_result.text)
+            provider_result.text = self._sanitize_output(provider_result.text)
             latency_ms = (time.time() - start_time) * 1000
             prompt_tokens = provider_result.prompt_tokens or len(generated_prompt) // 4
             completion_tokens = provider_result.completion_tokens or provider_result.tokens_used
@@ -746,7 +746,7 @@ class PromptClient:
         async for chunk in self._provider.stream(generated_prompt, **generation_kwargs):
             full_response.append(chunk)
             yield chunk
-        redacted_response = SecurityEngine.sanitize_output("".join(full_response))
+        redacted_response = self._sanitize_output("".join(full_response))
         self._record_event("stream", execution_id, True, generated_prompt,
                            detail=redacted_response)
         if session_id:
@@ -891,7 +891,7 @@ class PromptClient:
 
         start_time = time.time()
         provider_result = await provider.generate(prompt_text, system=system_prompt)
-        provider_result.text = SecurityEngine.sanitize_output(provider_result.text)
+        provider_result.text = self._sanitize_output(provider_result.text)
         latency_ms = (time.time() - start_time) * 1000
         new_execution_id = uuid.uuid4().hex[:16]
         result = self._make_result(
@@ -987,6 +987,21 @@ class PromptClient:
                            detail=f"reason={reason or 'no reason given'}")
 
     # -- compliance helpers ------------------------------------------------
+
+    def _sanitize_output(self, text: str) -> str:
+        """Redact secrets from provider output and record what was hidden.
+
+        Records an ``output_redacted`` audit event with the type of each
+        secret-like pattern replaced, keeping a forensic trail of what was
+        removed before the response reached the caller.
+        """
+        redacted, redactions = SecurityEngine.redact_with_metadata(text)
+        if redactions and self._audit is not None:
+            self._audit.record(
+                "output_redacted", uuid.uuid4().hex[:16], True,
+                detail=", ".join(redactions),
+            )
+        return redacted
 
     def _record_event(self, event: str, state_id: str, is_secure: bool,
                       content: str, detail: Optional[str] = None,

@@ -337,3 +337,66 @@ def _make_fake_classifier(response_text: str):
         def generate(self, messages, system=None):
             return response_text
     return FakeClassifierProvider()
+
+
+class TestEngineAuditEvents:
+    """Engine integration for output_redacted and replay_executed events."""
+
+    def _make_engine(self, tmp_path):
+        config_text = (
+            "metadata:\n  name: TestAgent\n  version: 0.1.0\n  environment: test\n"
+            "security_policy:\n  isolation_level: ZERO_TRUST\n  sanitize_inputs: true\n  max_payload_size_kb: 64\n"
+            "memory_strategy:\n  paging_mode: VIRTUAL_STATE_O1\n  max_history_turns: 3\n"
+        )
+        config_file = tmp_path / "agent.brompt.yaml"
+        config_file.write_text(config_text, encoding="utf-8")
+        return BromptEngine(str(config_file), provider=None, async_provider=None)
+
+    class _SecretProvider:
+        def generate(self, messages, system=None):
+            return "Your key: sk-ant-abcdefghijklmnopqrstuvwxyz123456 leaked"
+
+    def test_output_redaction_recorded(self, tmp_path):
+        engine = self._make_engine(tmp_path)
+        engine.provider = self._SecretProvider()
+        result = engine.execute("Hello")
+        assert result.is_secure is True
+        events = [e["event"] for e in engine.audit.read_all()]
+        assert "output_redacted" in events
+        entry = next(e for e in engine.audit.read_all() if e["event"] == "output_redacted")
+        assert "Anthropic API key" in entry["detail"]
+
+    def test_replay_records_event(self, tmp_path):
+        engine = self._make_engine(tmp_path)
+
+        class FakeProvider:
+            def generate(self, messages, system=None):
+                return "ok"
+
+        engine.provider = FakeProvider()
+        first = engine.execute("Hello")
+        entry = engine.audit.find_entry(first.receipt_hash)
+        assert entry is not None
+
+        engine.replay(entry["entry_hash"], provider=FakeProvider())
+
+        events = [e["event"] for e in engine.audit.read_all()]
+        assert "replay_executed" in events
+        rep = next(e for e in engine.audit.read_all() if e["event"] == "replay_executed")
+        assert "original_hash" in rep["detail"]
+        assert "replayed_hash" in rep["detail"]
+
+    def test_engine_accepts_ed25519_signing_key(self, tmp_path):
+        config_text = (
+            "metadata:\n  name: TestAgent\n  version: 0.1.0\n  environment: test\n"
+            "security_policy:\n  isolation_level: ZERO_TRUST\n  sanitize_inputs: true\n  max_payload_size_kb: 64\n"
+            "memory_strategy:\n  paging_mode: VIRTUAL_STATE_O1\n  max_history_turns: 3\n"
+        )
+        config_file = tmp_path / "agent.brompt.yaml"
+        config_file.write_text(config_text, encoding="utf-8")
+        engine = BromptEngine(str(config_file), provider=None, audit_signing_key="test-seed")
+        result = engine.execute("Hello")
+        assert engine.audit.is_ed25519 is True
+        entry = engine.audit.find_entry(result.receipt_hash)
+        assert entry["signature"]
+        assert engine.audit.verify() is True
