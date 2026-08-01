@@ -206,8 +206,10 @@ Redacts secret-like content before it reaches the caller:
 ### Layer 5: Audit-Grade Observability
 
 - SHA-256 hash-chained, append-only audit log
-- Tamper-evident via `AuditLog.verify()`
-- Every security event recorded with immutable chain
+- HMAC-SHA256 integrity with opt-in **Ed25519 non-repudiation** (`BROMPT_AUDIT_SIGNING_KEY`)
+- Cross-process safe via `portalocker` file locking (atomic `O_APPEND` fallback)
+- Tamper-evident via `AuditLog.verify()` and detailed `AuditLog.verify_report()`
+- Every security event recorded with immutable chain; output redactions and replay executions emit `output_redacted` / `replay_executed` events with forensic detail
 
 **Note:** No blocklist is a guarantee. The classifier layer significantly raises the bar, but defense-in-depth design (least-privilege tools, output redaction, audit trails) is essential.
 
@@ -480,7 +482,7 @@ If none are set, the engine runs in **dry-run / validation-only mode** — input
 
 ## 8. API Reference
 
-### `BromptEngine(config_path, provider=None, async_provider=None, audit_log_path=None, audit_secret_key=None, rate_limiter=None, injection_classifier=None, circuit_breaker=None)`
+### `BromptEngine(config_path, provider=None, async_provider=None, audit_log_path=None, audit_secret_key=None, audit_signing_key=None, rate_limiter=None, injection_classifier=None, circuit_breaker=None)`
 
 Core runtime entry point. Loads YAML manifest and initializes all subsystems.
 
@@ -491,6 +493,7 @@ Core runtime entry point. Loads YAML manifest and initializes all subsystems.
 | `async_provider` | `LLMProvider \| None` | `None` | Async provider for `execute_async()` |
 | `audit_log_path` | `str \| None` | `None` | Custom audit log path |
 | `audit_secret_key` | `str \| None` | `None` | HMAC signing key for audit entries (falls back to `BROMPT_AUDIT_SECRET` env var) |
+| `audit_signing_key` | `str \| bytes \| None` | `None` | Ed25519 seed for non-repudiable audit signatures (falls back to `BROMPT_AUDIT_SIGNING_KEY` env var) |
 | `rate_limiter` | `RateLimiterBackend \| None` | `None` | Custom rate limiter instance |
 | `injection_classifier` | `InjectionClassifier \| None` | `None` | Optional LLM-based injection classifier |
 | `circuit_breaker` | `CircuitBreaker \| None` | `None` | Optional circuit breaker for provider calls |
@@ -541,18 +544,33 @@ Per-caller sliding-window rate limiter.
 |---|---|---|
 | `check(identifier)` | `RateLimitExceededError` | Register a hit; raises if budget exhausted |
 
-### `AuditLog(path)`
+### `AuditLog(path, hmac_key=None, signing_key=None)`
 
-SHA-256 hash-chained, append-only audit log.
+SHA-256 hash-chained, append-only audit log with two integrity layers:
+
+- **HMAC-SHA256** (symmetric): requires a shared `hmac_key` (or `BROMPT_AUDIT_SECRET`).
+- **Ed25519** (asymmetric, opt-in): pass `signing_key` (raw seed bytes/str, or a
+  `cryptography.hazmat.primitives.asymmetric.ed25519.Ed25519PrivateKey`; falls back to
+  `BROMPT_AUDIT_SIGNING_KEY`). Each entry then carries a detached signature over its
+  `entry_hash`, giving **non-repudiation** — `verify()` also accepts a public key instead of the
+  secret. Requires the optional `brompt[audit]` extra (`cryptography`).
+- **Cross-process locking**: records and verification take a file lock (via
+  `portalocker`; falls back to `O_APPEND` atomic appends when unavailable) so multiple
+  processes can safely append to one chain. With `portalocker`, the read-compute-write
+  cycle is fully serialized; the `O_APPEND` fallback guarantees byte-level append integrity
+  but cannot prevent two processes forking the chain.
 
 | Method | Returns | Description |
 |---|---|---|
 | `record(event, state_id, is_secure, detail=None, latency_ms=None, tokens_used=None, messages=None)` | `dict` | Append a tamper-evident record; `messages` stores the exact prompt sent for replay |
 | `verify()` | `bool` | Replay chain; `False` if tampered |
+| `verify_report()` | `dict` | Detailed chain health: `ok`, `reason` (`valid`/`empty`/`chain_break`/`hash_mismatch`/`invalid_json`/`missing_hmac`/`hmac_mismatch`/`missing_signature`/`signature_mismatch`), failing `line`, entry count, expected vs found `prev_hash` |
+| `verify_entry(entry_hash)` | `bool` | Re-verify a single entry hash |
 | `read_all()` | `list[dict]` | Read all entries |
 | `find_entry(entry_hash)` | `dict \| None` | Look up a single entry by its hash |
 | `replay(entry_hash, provider, system=None)` | `dict` | Re-run stored messages on a different provider |
 | `is_signed` | `bool` | `True` when the log was opened with a signing key |
+| `is_ed25519` / `pubkey_id` | `bool` / `str` | `True` when Ed25519 signing is active; fingerprint (`sha256` of the raw public key, 16 hex chars) used to identify the signer |
 
 ### `CircuitBreaker(failure_threshold=5, recovery_timeout=30.0, half_open_max_calls=1)`
 
@@ -790,7 +808,7 @@ python -m brompt.guiapp --live     # launch and immediately connect the engine +
 Always-on-top floating widget with 5 tabs: **Docs, Live Status, Charts, Chat, Settings**.
 
 - **Live / Chart tabs** connect to the core `BromptEngine` (loading or creating `agent.brompt.yaml`) and stream real-time memory, hash-chained audit, security, and performance stats, plus 5 chart types (bar, line, area, stacked, donut).
-- **Chat tab** uses `PromptClient` directly with a provider chosen in Settings (Gemini, OpenAI, Anthropic, Mistral, Azure OpenAI, Ollama, LM Studio), surfacing token-savings and task auto-detection per reply.
+- **Chat tab** uses `PromptClient` directly with a provider chosen in Settings (Gemini, OpenAI, Anthropic, Mistral, Azure OpenAI, Ollama, LM Studio), surfacing token-savings and task auto-detection per reply. Provider calls run on a background thread so the UI never freezes; results are applied back on the Tk thread.
 - **Settings tab** is a YAML editor that validates before saving and can browse/load any `.yaml` config file.
 - Minimize (`Ctrl+M`) collapses to a system-tray icon when `pystray` + Pillow are installed, otherwise to a floating badge; `Ctrl+Q` quits. Window position/size are persisted to `~/.brompt_geometry.json`.
 - Shortcuts: `Ctrl+D`/`Ctrl+L`/`Ctrl+C`/`Ctrl+H`/`Ctrl+S` switch tabs, `Ctrl+Enter` sends in Chat.
