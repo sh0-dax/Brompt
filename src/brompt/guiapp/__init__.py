@@ -4,6 +4,7 @@ Always-on-top dark-themed panel with Docs, Live, Chart, Chat, and Settings tabs.
 Usage:  python -m brompt.guiapp [--live]
 """
 
+import asyncio
 import json
 import os
 import sys
@@ -496,43 +497,54 @@ class BromptWidget:
         self._loading = True
         self.status_label.configure(text="● sending...", fg=YELLOW)
 
-        ok = False
-        try:
-            with self._backend_lock:
-                if self._backend is None and not self._ensure_backend():
-                    return
+        # Setup (reads config, creates the backend) stays on the Tk thread;
+        # only the provider call moves to a worker thread so the UI is not
+        # blocked and no provider runs directly on the main loop.
+        with self._backend_lock:
+            if self._backend is None and not self._ensure_backend():
+                self._loading = False
+                self.status_label.configure(text="● error", fg=RED)
+                return
 
-                self._append_chat(f"  You: {text}\n")
+        self._append_chat(f"  You: {text}\n")
 
-                try:
-                    result = self._backend.prompt(text)
-                    response = result.response or "(no response)"
+        def worker():
+            try:
+                result = asyncio.run(self._backend.prompt(text))
+                self.root.after(0, lambda: self._finish_chat(True, result, text))
+            except Exception as exc:
+                self.root.after(0, lambda: self._finish_chat(False, exc, text))
 
-                    self._append_chat(f"  Bot: {response}\n")
+        threading.Thread(target=worker, daemon=True).start()
 
-                    if result.auto_detected and result.detected_task:
-                        conf = result.detection_confidence or 0
-                        self._append_chat(f"  🧠 {result.detected_task} ({conf:.0%})\n")
+    def _finish_chat(self, ok: bool, payload, text: str):
+        """Apply a completed (or failed) chat reply on the Tk thread."""
+        self._loading = False
+        if not ok:
+            err = payload if isinstance(payload, Exception) else "Unknown error"
+            self._append_chat(f"  Error: {err}\n")
+            self.status_label.configure(text="● error", fg=RED)
+            return
 
-                    saved_tok = result.tokens_saved or 0
-                    saved_cost = result.cost_saved or 0
-                    if saved_tok > 0:
-                        self._total_saved_tokens += saved_tok
-                        self._total_cost_saved += saved_cost
-                        pct = result.savings_percent or 0
-                        self._append_chat(f"  💰 Saved {saved_tok} tok (${saved_cost:.4f}) — {pct:.0f}% saved\n")
+        result = payload
+        response = result.response or "(no response)"
+        self._append_chat(f"  Bot: {response}\n")
 
-                    self._chat_messages.append({"role": "user", "content": text})
-                    self._chat_messages.append({"role": "assistant", "content": response})
-                    ok = True
+        if result.auto_detected and result.detected_task:
+            conf = result.detection_confidence or 0
+            self._append_chat(f"  🧠 {result.detected_task} ({conf:.0%})\n")
 
-                except Exception as exc:
-                    self._append_chat(f"  Error: {exc}\n")
-                    self.status_label.configure(text="● error", fg=RED)
-        finally:
-            self._loading = False
-            if ok:
-                self.status_label.configure(text="● connected", fg=GREEN)
+        saved_tok = result.tokens_saved or 0
+        saved_cost = result.cost_saved or 0
+        if saved_tok > 0:
+            self._total_saved_tokens += saved_tok
+            self._total_cost_saved += saved_cost
+            pct = result.savings_percent or 0
+            self._append_chat(f"  💰 Saved {saved_tok} tok (${saved_cost:.4f}) — {pct:.0%} saved\n")
+
+        self._chat_messages.append({"role": "user", "content": text})
+        self._chat_messages.append({"role": "assistant", "content": response})
+        self.status_label.configure(text="● connected", fg=GREEN)
 
     def _append_chat(self, msg: str):
         chat = self.content["chat_text"]

@@ -33,7 +33,7 @@ class FeedbackConfig(BaseModel):
 
 class APIConfig(BaseModel):
     """Settings for the REST API server."""
-    host: str = Field(default="0.0.0.0")
+    host: str = Field(default="127.0.0.1", description="Bind address; use 0.0.0.0 only behind an authenticated reverse proxy")  # noqa: E501
     port: int = Field(default=8000, ge=1024, le=65535)
     workers: int = Field(default=4, ge=1)
     rate_limit_per_minute: int = Field(default=60, ge=1)
