@@ -127,12 +127,12 @@ design on the application side.
 ### Request Flow
 
 ```mermaid
-flowchart TD
+graph TD
     A["Client App"] --> B["Rate Limiter"]
     B --> C["Security Engine"]
     C --> D{"Classifier"}
-    D -->|opt-in| E["LLM Semantic"]
-    D -->|skip| F["Memory Manager"]
+    D -- opt-in --> E["LLM Semantic"]
+    D -- skip --> F["Memory Manager"]
     E --> F
     F --> G["Circuit Breaker"]
     G --> H["Model Router"]
@@ -140,7 +140,7 @@ flowchart TD
     I --> K["Output Sanitizer"]
     K --> L["Audit Log"]
     L --> M["Client App"]
-    G -->|open| N["Fallback"]
+    G -- open --> N["Fallback"]
     N --> L
 ```
 
