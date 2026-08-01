@@ -873,7 +873,10 @@ class PromptClient:
         entry = self._audit.find_by_state(execution_id)
         if entry is None:
             raise KeyError(f"No audit entry for execution: {execution_id}")
-        if not self._audit.verify_entry(entry.get("entry_hash")):
+        entry_hash = entry.get("entry_hash")
+        if not isinstance(entry_hash, str):
+            raise KeyError(f"Audit entry {execution_id} has no entry_hash")
+        if not self._audit.verify_entry(entry_hash):
             raise TamperDetectedError(f"Audit entry {execution_id} has been tampered")
 
         if self._policy is not None:
@@ -928,19 +931,20 @@ class PromptClient:
         """Export the full audit trail for external review."""
         if self._audit is None:
             return []
-        return [
-            {
-                "id": e.get("entry_hash"),
+        exported = []
+        for e in self._audit.read_all():
+            entry_hash = e.get("entry_hash")
+            exported.append({
+                "id": entry_hash,
                 "state_id": e.get("state_id"),
                 "event": e.get("event"),
                 "timestamp": e.get("timestamp"),
                 "prev_hash": e.get("prev_hash"),
                 "signed": self._audit.is_signed,
-                "chain_verified": self._audit.verify_entry(e.get("entry_hash"))
-                if e.get("entry_hash") else False,
-            }
-            for e in self._audit.read_all()
-        ]
+                "chain_verified": self._audit.verify_entry(entry_hash)
+                if isinstance(entry_hash, str) else False,
+            })
+        return exported
 
     def get_compliance_report(self) -> dict:
         """High-level compliance snapshot for dashboards / external auditors."""

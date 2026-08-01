@@ -43,7 +43,10 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .providers.base import LLMProvider
 
 try:  # pragma: no cover - exercised when portalocker is installed
     import portalocker
@@ -121,6 +124,8 @@ class AuditLog:
         return self._pubkey_id
 
     def _derive_pubkey_id(self) -> str:
+        if self._signing_key is None:
+            return ""
         public_bytes = self._signing_key.public_key().public_bytes(
             encoding=Encoding.Raw,
             format=PublicFormat.Raw,
@@ -407,7 +412,7 @@ class AuditLog:
     def replay(
         self,
         entry_hash: str,
-        provider=None,
+        provider: "LLMProvider | None" = None,
         system: str | None = None,
         fn=None,
     ) -> dict[str, Any]:
@@ -444,6 +449,8 @@ class AuditLog:
         if fn is not None:
             text = fn(msgs, system=system)
             model = "replay"
+        elif provider is None:
+            return {"error": "No provider or fn supplied; cannot replay"}
         else:
             text = provider.generate(msgs, system=system)
             model = getattr(provider, "model", "replay")
