@@ -180,14 +180,14 @@ Brompt implements a multi-layer defense-in-depth security pipeline, not a single
 
 ### Layer 2: Pattern Blocklist
 
-19 regex patterns covering 4 languages (English, Arabic, Italian, German) for:
+16 regex patterns covering 4 languages (English, Arabic, Italian, German) for:
 - Direct instruction overrides
 - System prompt leakage attempts
 - Guardrail bypass attempts
 - Jailbreak persona switches
 - Role-play bypasses
 
-German detection matches native verb forms (`ignoriere/ignorieren … Anweisungen`) rather than anglicized variants, and the blocklist also covers mixed-language and fullwidth/leetspeak obfuscations that survive canonicalization.
+German detection matches native verb forms (`ignoriere/ignorieren … Anweisungen`) rather than anglicized variants. The blocklist deliberately does **not** match English-word false positives such as the mixed-language `ignore … Anweisungen` or `gib … System-Prompt preis` (matched instead by the semantic classifier layer), and it also covers fullwidth/leetspeak obfuscations that survive canonicalization.
 ### Layer 3: Semantic Classifier (`classifier.py`)
 
 An optional LLM-based second line of defense that reasons about intent, not surface text:

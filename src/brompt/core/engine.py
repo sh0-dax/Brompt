@@ -8,10 +8,11 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Awaitable
+from typing import Any, Awaitable, TypeVar
 
 import yaml
 
+from ..agents import MedicAgent, WardenAgent
 from ..audit import AuditLog
 from ..circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from ..classifier import InjectionClassificationError, InjectionClassifier, PendingReviewError, Tier
@@ -27,14 +28,17 @@ logger = logging.getLogger("brompt.core.engine")
 _UNSET = object()
 
 
-def _run_coro_sync(awaitable: Awaitable[str]) -> str:
+_T = TypeVar("_T")
+
+
+def _run_coro_sync(awaitable: Awaitable[_T]) -> _T:
     """Run a coroutine from synchronous code, tolerating an already-running
     event loop (spawns a daemon worker thread with its own loop)."""
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(awaitable)
-    result: dict[str, str] = {}
+    result: dict[str, _T] = {}
     error: list[BaseException] = []
 
     def _runner() -> None:
@@ -116,8 +120,8 @@ class BromptEngine:
         # leaks) via WardenAgent/MedicAgent in agents.py — independent of
         # SecurityEngine.redact_with_metadata, which only covers secrets/keys.
         self._pii_scan_enabled = enable_pii_scan
-        self._warden = None
-        self._medic = None
+        self._warden = WardenAgent() if enable_pii_scan else None
+        self._medic = MedicAgent() if enable_pii_scan else None
 
     # -- shared pipeline steps -------------------------------------------------
 
@@ -197,43 +201,26 @@ class BromptEngine:
 
     # -- output sanitization ---------------------------------------------------
 
-    async def _pii_heal_async(self, reply: str) -> str:
-        """Redact secrets and PII from a provider reply, recording both events.
+    async def _pii_heal_async(self, text: str) -> tuple[str, list]:
+        """Run WardenAgent (detect) + MedicAgent (targeted heal) on *text*.
 
-        Layer 1 (always on): SecurityEngine.redact_with_metadata — secrets/API
-        keys/tokens, logged as ``output_redacted``.
-        Layer 2 (enable_pii_scan): WardenAgent + MedicAgent — PII (credit
-        cards, SSN, email, phone) and system-prompt leaks, logged as
-        ``pii_redacted``. Mirrors PromptClient._sanitize_output so the
-        API/CLI path gets the same protection as the widget path.
+        Mirrors ``PromptClient._pii_heal_async`` in widget.py — shared logic
+        lives in agents.py, this is just the call site for the CLI/API path.
+        Returns ``(healed_text, concerns)`` so the caller records the audit
+        ``pii_redacted`` entry.
         """
-        redacted, redactions = SecurityEngine.redact_with_metadata(reply)
-        if redactions:
-            self.audit.record(
-                "output_redacted", self.state_id, True,
-                detail=", ".join(redactions),
-                latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
-            )
+        if not text:
+            return text, []
+        event = await self._warden.analyze(text)
+        concerns = event.metadata.get("concerns", [])
+        if not concerns:
+            return text, []
+        healed = await self._medic.act(event, text)
+        return healed, concerns
 
-        if not self._pii_scan_enabled:
-            return redacted
-
-        if self._warden is None:
-            from ..agents import WardenAgent
-            self._warden = WardenAgent()
-        if self._medic is None:
-            from ..agents import MedicAgent
-            self._medic = MedicAgent()
-
-        event = await self._warden.analyze(redacted)
-        if event.metadata.get("concerns"):
-            self.audit.record(
-                "pii_redacted", self.state_id, True,
-                detail=", ".join(event.metadata["concerns"]),
-                latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
-            )
-            redacted = await self._medic.act(event, redacted)
-        return redacted
+    def _pii_heal_sync(self, text: str) -> tuple[str, list]:
+        """Sync wrapper for the ``execute()`` (non-async) code path."""
+        return _run_coro_sync(self._pii_heal_async(text))
 
     # -- synchronous path -------------------------------------------------------
 
@@ -284,7 +271,21 @@ class BromptEngine:
                 else:
                     reply = self.provider.generate(messages_to_send, system=system_prompt)
                 self._last_latency_ms = (time.time() - t0) * 1000
-                reply = _run_coro_sync(self._pii_heal_async(reply))
+                reply, redactions = SecurityEngine.redact_with_metadata(reply)
+                if redactions:
+                    self.audit.record(
+                        "output_redacted", self.state_id, True,
+                        detail=", ".join(redactions),
+                        latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
+                    )
+                if self._pii_scan_enabled:
+                    reply, pii_concerns = self._pii_heal_sync(reply)
+                    if pii_concerns:
+                        self.audit.record(
+                            "pii_redacted", self.state_id, True,
+                            detail=", ".join(pii_concerns),
+                            latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
+                        )
                 self.memory.add_turn("assistant", reply)
                 output_payload["llm_response"] = reply
                 output_payload["provider_used"] = True
@@ -371,7 +372,21 @@ class BromptEngine:
             )
 
         if reply is not None:
-            reply = await self._pii_heal_async(reply)
+            reply, redactions = SecurityEngine.redact_with_metadata(reply)
+            if redactions:
+                self.audit.record(
+                    "output_redacted", self.state_id, True,
+                    detail=", ".join(redactions),
+                    latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
+                )
+            if self._pii_scan_enabled:
+                reply, pii_concerns = await self._pii_heal_async(reply)
+                if pii_concerns:
+                    self.audit.record(
+                        "pii_redacted", self.state_id, True,
+                        detail=", ".join(pii_concerns),
+                        latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
+                    )
             self.memory.add_turn("assistant", reply)
             output_payload["llm_response"] = reply
             output_payload["provider_used"] = True

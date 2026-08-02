@@ -11,6 +11,7 @@ from datetime import datetime
 from threading import Lock
 from typing import AsyncIterator, Optional
 
+from .agents import MedicAgent, WardenAgent
 from .audit import AuditLog
 from .config import BudgetConfig, ComplianceConfig, PolicyConfig, ProviderConfig, WidgetConfig
 from .optimizer import TokenOptimizer
@@ -418,8 +419,8 @@ class PromptClient:
         # leaks) via WardenAgent/MedicAgent in agents.py. Independent of
         # SecurityEngine.redact_with_metadata, which only covers secrets/keys.
         self._pii_scan_enabled = enable_pii_scan
-        self._warden = None
-        self._medic = None
+        self._warden = WardenAgent() if enable_pii_scan else None
+        self._medic = MedicAgent() if enable_pii_scan else None
         self._audit_key = (
             audit_secret_key
             or self._compliance.signing_key
@@ -1020,24 +1021,32 @@ class PromptClient:
                 detail=", ".join(redactions),
             )
 
-        if self._pii_scan_enabled:
-            if self._warden is None:
-                from .agents import WardenAgent
-                self._warden = WardenAgent()
-            if self._medic is None:
-                from .agents import MedicAgent
-                self._medic = MedicAgent()
-
-            event = await self._warden.analyze(redacted)
-            if event.metadata.get("concerns"):
-                if self._audit is not None:
-                    self._audit.record(
-                        "pii_redacted", uuid.uuid4().hex[:16], True,
-                        detail=", ".join(event.metadata["concerns"]),
-                    )
-                redacted = await self._medic.act(event, redacted)
+        if self._pii_scan_enabled and redacted:
+            healed, concerns = await self._pii_heal_async(redacted)
+            if concerns and self._audit is not None:
+                self._audit.record(
+                    "pii_redacted", uuid.uuid4().hex[:16], True,
+                    detail=", ".join(concerns),
+                )
+            redacted = healed
 
         return redacted
+
+    async def _pii_heal_async(self, text: str) -> tuple[str, list]:
+        """Run WardenAgent (detect) + MedicAgent (targeted heal) on *text*.
+
+        Returns ``(healed_text, concerns)``. Mirrors
+        ``BromptEngine._pii_heal_async`` in core/engine.py so the CLI/API and
+        widget paths behave identically.
+        """
+        if not text:
+            return text, []
+        event = await self._warden.analyze(text)
+        concerns = event.metadata.get("concerns", [])
+        if not concerns:
+            return text, []
+        healed = await self._medic.act(event, text)
+        return healed, concerns
 
     def _record_event(self, event: str, state_id: str, is_secure: bool,
                       content: str, detail: Optional[str] = None,
@@ -1256,6 +1265,7 @@ class CompliantPromptClient(PromptClient):
         enable_auto_detect: bool = False,
         enable_streaming: bool = True,
         audit_log_path: Optional[str] = None,
+        enable_pii_scan: bool = True,
     ):
         self.policy = policy
         compliance = policy.to_compliance_config() if policy is not None else None
@@ -1269,6 +1279,7 @@ class CompliantPromptClient(PromptClient):
             audit_log_path=audit_log_path,
             audit_secret_key=audit_secret,
             compliance=compliance,
+            enable_pii_scan=enable_pii_scan,
         )
 
     @property

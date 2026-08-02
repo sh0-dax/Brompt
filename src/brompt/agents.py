@@ -176,6 +176,7 @@ class SentryAgent(BaseSecurityAgent):
             threat_level = ThreatLevel.SUSPICIOUS
             reason = str(exc)
 
+        # فحوصات سلوكية إضافية لا تغطيها SecurityEngine
         if self._detect_repetition(prompt):
             threat_level = max(threat_level, ThreatLevel.SUSPICIOUS, key=_severity)
             anomalies.append("repetition_attack")
@@ -446,7 +447,7 @@ class ProberAgent(BaseSecurityAgent):
                 blocked = False
             except SecurityViolationError:
                 blocked = True
-            except Exception as exc:
+            except Exception as exc:  # نسجل أي فشل غير متوقع كنتيجة اختبار
                 blocked = True
                 logger.debug("Prober test raised unexpected %r for case %r", exc, test_case)
 
