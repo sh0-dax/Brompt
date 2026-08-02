@@ -121,14 +121,15 @@ class TestInputSanitization:
 
 class TestOutputRedaction:
     async def test_output_leaks_are_redacted(self, monkeypatch, provider):
-        provider._text = "The key is sk-ant-12345678901234567890123456 do not share it"
+        # Fake key-shaped text to exercise output redaction.
+        provider._text = "The key is sk-ant-12345678901234567890123456 do not share it"  # pragma: allowlist secret
         monkeypatch.setattr(ProviderFactory, "from_config", lambda config: provider)
         client = CompliantPromptClient(config=make_config(), policy=standard_policy())
 
         result = await client.prompt("Hello")
 
         assert "[REDACTED]" in result.response
-        assert "sk-ant-12345678901234567890123456" not in result.response
+        assert "sk-ant-12345678901234567890123456" not in result.response  # pragma: allowlist secret
 
     async def test_replay_output_is_redacted(self, tmp_path, monkeypatch, provider):
         monkeypatch.setattr(ProviderFactory, "from_config", lambda config: provider)

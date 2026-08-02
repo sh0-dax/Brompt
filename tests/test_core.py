@@ -354,7 +354,8 @@ class TestEngineAuditEvents:
 
     class _SecretProvider:
         def generate(self, messages, system=None):
-            return "Your key: sk-ant-abcdefghijklmnopqrstuvwxyz123456 leaked"
+            # Fake key-shaped output to exercise system-prompt leak redaction.
+            return "Your key: sk-ant-abcdefghijklmnopqrstuvwxyz123456 leaked"  # pragma: allowlist secret
 
     def test_output_redaction_recorded(self, tmp_path):
         engine = self._make_engine(tmp_path)

@@ -41,8 +41,9 @@ class TestSanitizeWithMetadata:
 
 class TestRedactWithMetadata:
     def test_redacts_and_reports_each_type(self):
-        key = "sk-ant-abcdefghijklmnopqrstuvwxyz123456"
-        token = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcdefghij"
+        # Fake, well-formed-looking secrets to exercise the redaction regexes.
+        key = "sk-ant-abcdefghijklmnopqrstuvwxyz123456"  # pragma: allowlist secret
+        token = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcdefghij"  # pragma: allowlist secret
         text = f"My key is {key} and token {token}"
         redacted, redactions = SecurityEngine.redact_with_metadata(text)
         assert "[REDACTED]" in redacted
@@ -59,5 +60,5 @@ class TestRedactWithMetadata:
         assert SecurityEngine.redact_with_metadata("") == ("", [])
 
     def test_sanitize_output_delegates(self):
-        text = "sk-ant-abcdefghijklmnopqrstuvwxyz123456"
+        text = "sk-ant-abcdefghijklmnopqrstuvwxyz123456"  # pragma: allowlist secret
         assert SecurityEngine.sanitize_output(text) == "[REDACTED]"

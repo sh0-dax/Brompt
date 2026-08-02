@@ -100,7 +100,8 @@ class TestBuildProviderFromEnv:
         assert build_provider_from_env() is None
 
     def test_returns_anthropic_when_key_set(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-fake-key")
+        # Fake key value; only its presence is exercised, never transmitted.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-fake-key")  # pragma: allowlist secret
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         provider = build_provider_from_env()
         assert provider is not None

@@ -620,7 +620,10 @@ class LMStudioProvider(LLMProvider):
             raise ProviderError(
                 "The 'openai' package is required. Install with: pip install 'brompt-engine[lmstudio]'"
             ) from exc
-        self._client = openai.OpenAI(api_key="lm-studio", base_url=self.host)
+        # LM Studio's local OpenAI-compatible server accepts any non-empty key;
+        # "lm-studio" is a non-secret placeholder, never a credential.
+        api_key = os.environ.get("LM_STUDIO_API_KEY", "lm-studio")  # pragma: allowlist secret
+        self._client = openai.OpenAI(api_key=api_key, base_url=self.host)
 
     def generate(self, messages: list[dict[str, str]], system: str | None = None) -> str:
         if not messages:
