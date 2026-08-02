@@ -78,25 +78,33 @@ async def test_prompt_redacts_pii_via_warden_and_medic(monkeypatch, tmp_path):
     assert client._audit.verify() is True
 
 
-async def test_prompt_leaves_clean_response_untouched(monkeypatch):
+async def test_prompt_leaves_clean_response_untouched(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ProviderFactory, "from_config",
         lambda config: FakeProviderWithPII("The weather today is sunny with a light breeze."),
     )
-    client = PromptClient(config=make_config(), enable_pii_scan=True)
+    client = PromptClient(
+        config=make_config(),
+        enable_pii_scan=True,
+        audit_log_path=str(tmp_path / "audit.log"),
+    )
 
     result = await client.prompt("How's the weather?")
 
     assert result.response == "The weather today is sunny with a light breeze."
 
 
-async def test_pii_scan_can_be_disabled(monkeypatch):
+async def test_pii_scan_can_be_disabled(monkeypatch, tmp_path):
     leaky_response = "Email me at billing@example.com anytime."
     monkeypatch.setattr(
         ProviderFactory, "from_config",
         lambda config: FakeProviderWithPII(leaky_response),
     )
-    client = PromptClient(config=make_config(), enable_pii_scan=False)
+    client = PromptClient(
+        config=make_config(),
+        enable_pii_scan=False,
+        audit_log_path=str(tmp_path / "audit.log"),
+    )
 
     result = await client.prompt("What's your contact?")
 
