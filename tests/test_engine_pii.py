@@ -22,6 +22,11 @@ class LeakyAsyncProvider(LLMProvider):
         return "SSN 123-45-6789. Phone 555-123-4567."
 
 
+class BenignProvider(LLMProvider):
+    def generate(self, messages, system=None):
+        return "Your order 4829 1038 4756 2910 is confirmed. Call support anytime."
+
+
 def _write_manifest(tmp_path):
     config_file = tmp_path / "agent.brompt.yaml"
     config_file.write_text(
@@ -79,3 +84,18 @@ async def test_engine_sync_execute_inside_running_loop(tmp_path):
 
     assert "[REDACTED-CC]" in result.data["llm_response"]
     assert "[REDACTED-EMAIL]" in result.data["llm_response"]
+
+
+def test_engine_leaves_benign_numbers_untouched(tmp_path):
+    manifest = _write_manifest(tmp_path)
+    engine = BromptEngine(
+        str(manifest), provider=BenignProvider(),
+        audit_log_path=str(tmp_path / "engine.audit.log"),
+    )
+
+    result = engine.execute("hello")
+
+    assert (
+        result.data["llm_response"]
+        == "Your order 4829 1038 4756 2910 is confirmed. Call support anytime."
+    )

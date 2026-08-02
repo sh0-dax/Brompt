@@ -219,7 +219,7 @@ pattern/signature source of truth stays in one place.
 | Agent | Role | Delegates to |
 | --- | --- | --- |
 | `SentryAgent` | Input gatekeeper | `SecurityEngine.sanitize_with_metadata` + behavioural checks (repetition, oversize) |
-| `WardenAgent` | Output PII scanner (credit cards, SSN, email, phone, system-prompt leaks) | `SecurityEngine.redact_with_metadata` for secrets |
+| `WardenAgent` | Output PII scanner (Luhn-validated credit cards, SSN, email, phone, system-prompt leaks) | `SecurityEngine.redact_with_metadata` for secrets |
 | `MedicAgent` | Targeted redaction of PII concerns (`[REDACTED-CC]`, `[REDACTED-EMAIL]`, …) | Warden's structural concerns |
 | `ScribeAgent` | Thin audit writer | Real `AuditLog` (hash chain + HMAC) — no parallel store |
 | `ProberAgent` | Red-team: runs real test cases against `SecurityEngine.sanitize`, records only actual bypasses | `SecurityEngine.sanitize` |
@@ -231,6 +231,14 @@ pattern/signature source of truth stays in one place.
   Warden + Medic, recording a `pii_redacted` audit event with forensic detail.
 - Opt out per-instance with `enable_pii_scan=False`; the secrets layer
   (`SecurityEngine.redact_with_metadata`) always runs.
+- **Validated detection, not blind regex:** credit cards must pass the Luhn
+  checksum before `[REDACTED-CC]` is applied, and phone/SSN numbers need an
+  explicit signal (an international `+`/`00` prefix for phones, or a nearby
+  context keyword like `phone`/`SSN`) — so order numbers, SKUs, reference
+  codes, and company phone numbers pass through untouched.
+- **Per-tenant opt-out:** `PolicyConfig.enable_pii_scan` (`None` = inherit
+  the constructor default, `False` = disable Warden/Medic for that tenant
+  via `CompliantPromptClient`).
 - The Prober ships 16 OWASP LLM Top-10-inspired cases (English, Arabic,
   Italian, German, leetspeak, zero-width/fullwidth Unicode, base64); the
   suite is expected to find **zero** bypasses against the real engine.
@@ -983,6 +991,7 @@ matrix:
 - ⚠️ **Signed execution receipt serialization** — produce standalone `.receipt` files for external audit
 - ⚠️ **Deterministic replay CLI** — `brompt replay <audit-id> --model=X` with diff output (engine `replay()` exists; CLI command pending)
 - ⚠️ **Cross-process budget ledger** — current `BudgetConfig` limits are enforced in-process only; a shared/atomic budget store is needed for multi-instance deployments
+- ⚠️ **Prober indirect-injection coverage** — extend `ProberAgent` test cases beyond direct prompts to tool/RAG-mediated (indirect) prompt injection
 
 ---
 

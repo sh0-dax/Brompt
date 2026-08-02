@@ -275,3 +275,32 @@ class TestCompliantPromptClient:
         assert isinstance(result, SignedExecutionResult)
         assert client.audit_log is client.audit  # audit alias works
         assert client.audit is not None
+
+
+class TestPolicyPiiScan:
+    def test_policy_default_enables_agents(self, provider):
+        client = CompliantPromptClient(config=make_config(), policy=standard_policy())
+        assert client._warden is not None
+        assert client._medic is not None
+
+    def test_policy_enable_pii_scan_disables_agents(self, provider):
+        client = CompliantPromptClient(
+            config=make_config(), policy=standard_policy(enable_pii_scan=False),
+        )
+        assert client._warden is None
+        assert client._medic is None
+
+    def test_policy_wins_over_constructor_argument(self, provider):
+        client = CompliantPromptClient(
+            config=make_config(),
+            policy=standard_policy(enable_pii_scan=False),
+            enable_pii_scan=True,
+        )
+        assert client._warden is None
+
+    def test_policy_pii_scan_yaml_roundtrip(self, tmp_path, provider):
+        policy = standard_policy(enable_pii_scan=False)
+        path = tmp_path / "policy.yaml"
+        policy.to_yaml(str(path))
+        loaded = PolicyConfig.from_yaml(str(path))
+        assert loaded.enable_pii_scan is False

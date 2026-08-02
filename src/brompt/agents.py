@@ -218,10 +218,66 @@ def _severity(level: ThreatLevel) -> int:
     return [ThreatLevel.SAFE, ThreatLevel.SUSPICIOUS, ThreatLevel.DANGEROUS, ThreatLevel.CRITICAL].index(level)
 
 
+_PHONE_CONTEXT = re.compile(
+    r"(?i)(phone|tel(?:ephone)?|mobile|cell(?:ular)?|call|number|reach|contact)"
+)
+_SSN_CONTEXT = re.compile(r"(?i)(ssn|social[\s-]?security|security\s+number|الضمان\s+الاجتماعي)")
+_INTERNATIONAL_PREFIX = re.compile(r"(\+|\b00)\s*\d{1,3}\s*[\-.\s]?$")
+
+
+def _luhn_valid(digits: str) -> bool:
+    """Standard Luhn (mod-10) checksum — only a plausible card number passes."""
+    digits = re.sub(r"\D", "", digits)
+    if not digits:
+        return False
+    total = 0
+    for idx, ch in enumerate(reversed(digits)):
+        d = ord(ch) - 48
+        if idx % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
+def _nearby_window(text: str, match: re.Match[str], radius: int = 40) -> str:
+    return text[max(0, match.start() - radius):match.end() + radius]
+
+
+def _phone_is_flagged(match: re.Match[str], text: str) -> bool:
+    prefix = text[max(0, match.start() - 8):match.start()]
+    if _INTERNATIONAL_PREFIX.search(prefix):
+        return True
+    return bool(_PHONE_CONTEXT.search(_nearby_window(text, match)))
+
+
+def _ssn_is_flagged(match: re.Match[str], text: str) -> bool:
+    return bool(_SSN_CONTEXT.search(_nearby_window(text, match)))
+
+
+def _email_is_flagged(match: re.Match[str], text: str) -> bool:
+    return True
+
+
+_PII_VALIDATORS: Dict[str, Callable[[re.Match[str], str], bool]] = {
+    "credit_card": lambda m, _t: _luhn_valid(m.group()),
+    "phone": _phone_is_flagged,
+    "ssn": _ssn_is_flagged,
+    "email": _email_is_flagged,
+}
+
+
 class WardenAgent(BaseSecurityAgent):
     """رقيب: يفحص المخرجات بحثاً عن تسريب PII (بطاقات، SSN، إيميل، هاتف)
     وتسريب تعليمات النظام - وهذه فحوصات SecurityEngine.redact_with_metadata
-    لا تغطيها (هي مخصصة للأسرار/المفاتيح البرمجية فقط)."""
+    لا تغطيها (هي مخصصة للأسرار/المفاتيح البرمجية فقط).
+
+    Detection is deliberately *validated*, not bare-regex: credit cards must
+    pass the Luhn checksum and phone/SSN numbers need an explicit signal
+    (international ``+``/``00`` prefix for phones, or a nearby context keyword)
+    so ordinary reference numbers and company details survive untouched.
+    """
 
     PII_PATTERNS: ClassVar[Dict[str, str]] = {
         "credit_card": r"\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b",
@@ -246,7 +302,11 @@ class WardenAgent(BaseSecurityAgent):
         concerns: List[str] = []
 
         for data_type, pattern in self.PII_PATTERNS.items():
-            if re.search(pattern, response):
+            flagged = [
+                m for m in re.finditer(pattern, response)
+                if _PII_VALIDATORS[data_type](m, response)
+            ]
+            if flagged:
                 concerns.append(f"potential_{data_type}_leak")
                 threat_level = ThreatLevel.DANGEROUS
 
@@ -318,15 +378,34 @@ class MedicAgent(BaseSecurityAgent):
         if any(c.startswith("secret_leak:") for c in concerns):
             healed, _ = SecurityEngine.redact_with_metadata(healed)
 
+        def _validated_redact(data_type: str, marker: str) -> Callable[[re.Match[str]], str]:
+            def _cb(m: re.Match[str]) -> str:
+                if _PII_VALIDATORS[data_type](m, healed):
+                    return marker
+                return m.group()
+            return _cb
+
         for c in concerns:
             if c == "potential_credit_card_leak":
-                healed = re.sub(WardenAgent.PII_PATTERNS["credit_card"], "[REDACTED-CC]", healed)
+                healed = re.sub(
+                    WardenAgent.PII_PATTERNS["credit_card"],
+                    _validated_redact("credit_card", "[REDACTED-CC]"),
+                    healed,
+                )
             elif c == "potential_ssn_leak":
-                healed = re.sub(WardenAgent.PII_PATTERNS["ssn"], "[REDACTED-SSN]", healed)
+                healed = re.sub(
+                    WardenAgent.PII_PATTERNS["ssn"],
+                    _validated_redact("ssn", "[REDACTED-SSN]"),
+                    healed,
+                )
             elif c == "potential_email_leak":
                 healed = re.sub(WardenAgent.PII_PATTERNS["email"], "[REDACTED-EMAIL]", healed)
             elif c == "potential_phone_leak":
-                healed = re.sub(WardenAgent.PII_PATTERNS["phone"], "[REDACTED-PHONE]", healed)
+                healed = re.sub(
+                    WardenAgent.PII_PATTERNS["phone"],
+                    _validated_redact("phone", "[REDACTED-PHONE]"),
+                    healed,
+                )
             elif c == "system_prompt_leak":
                 healed = "I can't share my internal configuration, but I'm happy to help with your request."
 

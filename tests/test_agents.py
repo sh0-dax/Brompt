@@ -69,6 +69,66 @@ async def test_medic_leaves_clean_text_untouched():
     assert healed == "Hello world"
 
 
+async def test_warden_ignores_luhn_invalid_card():
+    warden = WardenAgent()
+    medic = MedicAgent()
+    text = "رقم الطلب هو 4829 1038 4756 2910"
+    event = await warden.analyze(text)
+    assert "potential_credit_card_leak" not in event.metadata["concerns"]
+    assert await medic.act(event, text) == text
+
+
+async def test_medic_redacts_only_luhn_valid_card():
+    warden = WardenAgent()
+    medic = MedicAgent()
+    text = "Card 4242 4242 4242 4242 and ref 4829 1038 4756 2910"
+    event = await warden.analyze(text)
+    healed = await medic.act(event, text)
+    assert "4242 4242 4242 4242" not in healed
+    assert "4829 1038 4756 2910" in healed
+    assert "[REDACTED-CC]" in healed
+
+
+async def test_warden_phone_needs_context_or_prefix():
+    warden = WardenAgent()
+    medic = MedicAgent()
+    benign = [
+        "اتصل بخدمة العملاء على 800-555-0199",
+        "رقم المنتج SKU هو 1234567890",
+        "كود المرجع 555-123-4567",
+    ]
+    for text in benign:
+        event = await warden.analyze(text)
+        assert "potential_phone_leak" not in event.metadata["concerns"], text
+        assert await medic.act(event, text) == text
+
+    flagged = [
+        "Call us at 800-555-0199",
+        "Phone 555-123-4567",
+        "+1 800-555-0199",
+    ]
+    for text in flagged:
+        event = await warden.analyze(text)
+        assert "potential_phone_leak" in event.metadata["concerns"], text
+        healed = await medic.act(event, text)
+        assert "[REDACTED-PHONE]" in healed
+
+
+async def test_warden_ssn_needs_context():
+    warden = WardenAgent()
+    medic = MedicAgent()
+    benign = "Reference 123-45-6789 is logged"
+    event = await warden.analyze(benign)
+    assert "potential_ssn_leak" not in event.metadata["concerns"]
+    assert await medic.act(event, benign) == benign
+
+    flagged = "My SSN is 123-45-6789"
+    event2 = await warden.analyze(flagged)
+    assert "potential_ssn_leak" in event2.metadata["concerns"]
+    healed = await medic.act(event2, flagged)
+    assert "[REDACTED-SSN]" in healed
+
+
 async def test_prober_reports_real_bypasses():
     prober = ProberAgent()
     events = await prober.analyze(lambda text: text)

@@ -234,6 +234,7 @@ class PolicyConfig:
     policy_path: Optional[str] = None
     signing_key: Optional[str] = None
     data_residency: Optional[str] = None
+    enable_pii_scan: Optional[bool] = None
 
     def __post_init__(self):
         if self.human_review_action not in ("return", "raise"):
@@ -289,6 +290,7 @@ class PolicyConfig:
             "policy_path": self.policy_path,
             "signing_key": self.signing_key,
             "data_residency": self.data_residency,
+            "enable_pii_scan": self.enable_pii_scan,
         }
 
     def needs_human_review(self, message: str) -> bool:

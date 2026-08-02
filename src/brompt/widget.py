@@ -1270,6 +1270,9 @@ class CompliantPromptClient(PromptClient):
         self.policy = policy
         compliance = policy.to_compliance_config() if policy is not None else None
         audit_secret = policy.get_signing_key() if policy is not None else None
+        policy_override = policy.enable_pii_scan if policy is not None else None
+        if policy_override is not None:
+            enable_pii_scan = policy_override
         super().__init__(
             config=config,
             enable_token_optimization=enable_token_optimization,

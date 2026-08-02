@@ -111,3 +111,23 @@ async def test_pii_scan_can_be_disabled(monkeypatch, tmp_path):
     # Opt-out respected: secret-scan (SecurityEngine) still runs, but no
     # PII layer, so the email survives untouched.
     assert "billing@example.com" in result.response
+
+
+async def test_prompt_leaves_benign_numbers_untouched(monkeypatch, tmp_path):
+    benign = (
+        "رقم الطلب هو 4829 1038 4756 2910. اتصل بخدمة العملاء على 800-555-0199. "
+        "كود المرجع 555-123-4567"
+    )
+    monkeypatch.setattr(
+        ProviderFactory, "from_config",
+        lambda config: FakeProviderWithPII(benign),
+    )
+    client = PromptClient(
+        config=make_config(),
+        enable_pii_scan=True,
+        audit_log_path=str(tmp_path / "audit.log"),
+    )
+
+    result = await client.prompt("هل يمكنك تأكيد الطلب؟")
+
+    assert result.response == benign
