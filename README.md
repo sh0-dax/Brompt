@@ -520,7 +520,7 @@ If none are set, the engine runs in **dry-run / validation-only mode** — input
 
 ## 8. API Reference
 
-### `BromptEngine(config_path, provider=None, async_provider=None, audit_log_path=None, audit_secret_key=None, audit_signing_key=None, rate_limiter=None, injection_classifier=None, circuit_breaker=None)`
+### `BromptEngine(config_path, provider=None, async_provider=None, audit_log_path=None, audit_secret_key=None, audit_signing_key=None, rate_limiter=None, injection_classifier=None, circuit_breaker=None, enable_pii_scan=True)`
 
 Core runtime entry point. Loads YAML manifest and initializes all subsystems.
 
@@ -535,6 +535,7 @@ Core runtime entry point. Loads YAML manifest and initializes all subsystems.
 | `rate_limiter` | `RateLimiterBackend \| None` | `None` | Custom rate limiter instance |
 | `injection_classifier` | `InjectionClassifier \| None` | `None` | Optional LLM-based injection classifier |
 | `circuit_breaker` | `CircuitBreaker \| None` | `None` | Optional circuit breaker for provider calls |
+| `enable_pii_scan` | `bool` | `True` | Output-side PII scan via `WardenAgent`/`MedicAgent`; `False` disables it. The secrets layer always runs |
 
 **Methods:**
 
@@ -560,7 +561,7 @@ Validates input against adversarial patterns. Raises `SecurityViolationError` or
 
 ### `SecurityEngine.sanitize_output(text)`
 
-Redacts secret-like content (API keys, tokens) from model output.
+Redacts secret-like content (API keys, tokens) from model output. This is the **secrets layer only** — PII (credit cards, SSN, email, phone, system-prompt leaks) is handled by `WardenAgent`/`MedicAgent` (see §2, Layer 5).
 
 ### `MemoryManager(max_turns)`
 
@@ -665,7 +666,7 @@ Commands:
   clear      Clear engine memory and history
 ```
 
-### `PromptClient(config=None, enable_token_optimization=True, enable_cache=True, enable_auto_detect=False, enable_streaming=True, audit_log_path=None, audit_secret_key=None, compliance=None)` (alias: `BromptWidget`)
+### `PromptClient(config=None, enable_token_optimization=True, enable_cache=True, enable_auto_detect=False, enable_streaming=True, audit_log_path=None, audit_secret_key=None, compliance=None, enable_pii_scan=True)` (alias: `BromptWidget`)
 
 Unified high-level entry point combining engine, session, and widget config.
 
@@ -716,7 +717,7 @@ for entry in client.export_audit_trail():
 
 Compliance gates, in order: policy-as-code (deny rules by `caller_id`), air-gap probe (raises in `air_gapped` mode when outbound connectivity is detected), budget preflight (raises `BudgetExceededError`), then human review for sensitive patterns (`needs_approval` with `approve()` / `reject()`). Every gate, provider failure, approval, and rejection is itself audit-logged, so the trail covers both allowed and blocked executions.
 
-**Security on the Quick Start path:** every `prompt()` and `prompt_stream()` call first runs `SecurityEngine.sanitize` on the input — blocked inputs raise `SecurityViolationError` and are audit-logged as `security_denied` — and provider output is passed through `SecurityEngine.sanitize_output` before it reaches the caller. `PromptClient` therefore applies the same defense-in-depth as `BromptEngine`.
+**Security on the Quick Start path:** every `prompt()` and `prompt_stream()` call first runs `SecurityEngine.sanitize` on the input — blocked inputs raise `SecurityViolationError` and are audit-logged as `security_denied`. Provider output passes through two independent layers before reaching the caller: the always-on secrets layer (`SecurityEngine.redact_with_metadata`, audited as `output_redacted`) and — unless `enable_pii_scan=False` — the Warden/Medic PII layer (credit cards, SSN, email, phone, system-prompt leaks; audited as `pii_redacted` with `[REDACTED-CC]` / `[REDACTED-EMAIL]` markers). `PromptClient` therefore applies the same defense-in-depth as `BromptEngine`.
 
 Additional compliance affordances:
 
@@ -744,7 +745,7 @@ assert result.receipt             # == audit_hash
 ```
 
 - **`PolicyConfig`** — standalone per-tenant policy: `tenant_id`, `mode` (`ComplianceMode`), `sensitivity` (`SensitivityLevel`), `budget` (`BudgetConfig`), `human_review_patterns`, `human_review_action`, `policy_rules`/`policy_path`, `signing_key` (defaults to a deterministic per-tenant key via `get_signing_key()`), `data_residency`. Loads/saves YAML & JSON; `to_compliance_config()` bridges it to the engine-level `ComplianceConfig`.
-- **`CompliantPromptClient`** — `PromptClient` subclass that drives behaviour from a `PolicyConfig` and returns `SignedExecutionResult` from `prompt()`/`replay()`. Aliases: `.audit` (= `.audit_log`), `.budget` (active ledger), `.mode`. All existing `PromptClient` methods (`approve`, `reject`, `verify_execution`, `export_audit_trail`, `get_compliance_report`, `replay`) work unchanged.
+- **`CompliantPromptClient`** — `PromptClient` subclass that drives behaviour from a `PolicyConfig` and returns `SignedExecutionResult` from `prompt()`/`replay()`. Aliases: `.audit` (= `.audit_log`), `.budget` (active ledger), `.mode`. Accepts all `PromptClient` constructor args, including `enable_pii_scan=True`. All existing `PromptClient` methods (`approve`, `reject`, `verify_execution`, `export_audit_trail`, `get_compliance_report`, `replay`) work unchanged.
 - **`SignedExecutionResult`** — `PromptResult` subclass typed for audit proof, with `verified` (`tamper_check is True`) and `receipt` (= `audit_hash`) conveniences.
 
 ```yaml
