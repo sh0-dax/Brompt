@@ -70,13 +70,16 @@ class BromptEngine:
         injection_classifier: InjectionClassifier | None = None,
         circuit_breaker: CircuitBreaker | None = None,
         enable_pii_scan: bool = True,
+        allow_missing_manifest: bool = False,
     ):
         manifest_file = Path(config_path)
         if not manifest_file.exists():
-            raise FileNotFoundError(f"Manifest missing: {config_path}")
-
-        with open(manifest_file, "r", encoding="utf-8") as f:
-            raw_manifest = yaml.safe_load(f) or {}
+            if not allow_missing_manifest:
+                raise FileNotFoundError(f"Manifest missing: {config_path}")
+            raw_manifest: dict = {}
+        else:
+            with open(manifest_file, "r", encoding="utf-8") as f:
+                raw_manifest = yaml.safe_load(f) or {}
 
         metadata = raw_manifest.get("metadata", {})
         sec_policy = raw_manifest.get("security_policy", {})

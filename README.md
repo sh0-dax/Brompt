@@ -239,9 +239,10 @@ pattern/signature source of truth stays in one place.
 - **Per-tenant opt-out:** `PolicyConfig.enable_pii_scan` (`None` = inherit
   the constructor default, `False` = disable Warden/Medic for that tenant
   via `CompliantPromptClient`).
-- The Prober ships 16 OWASP LLM Top-10-inspired cases (English, Arabic,
-  Italian, German, leetspeak, zero-width/fullwidth Unicode, base64); the
-  suite is expected to find **zero** bypasses against the real engine.
+- The Prober ships 23 OWASP LLM Top-10-inspired cases (English, Arabic,
+  Italian, German, leetspeak, zero-width/fullwidth Unicode, base64, plus
+  tool/RAG/structured-data mediated **indirect** injection); the suite is
+  expected to find **zero** bypasses against the real engine.
 - Thread-safe: every `memory`/`threat_history` mutation is guarded by a
   `threading.Lock`; memory is bounded (last 500 events).
 - Backward-compatible: old names (`GuardianAgent`, `SentinelAgent`,
@@ -668,6 +669,8 @@ Commands:
   run        Execute a single prompt
   history    Show conversation history
   audit      Show audit log entries
+  replay     Deterministically re-run a recorded execution and diff the output
+  receipt    Export or verify a standalone signed execution receipt
   status     Show engine status and configuration
   templates  List or render prompt templates
   config     Show or validate a Brompt config file
@@ -733,7 +736,7 @@ Additional compliance affordances:
 - **`data_residency`** — optional region tag (`"eu"`, `"us"`, `"mena"`, ...) validated nowhere but stamped on every `PromptResult` and included in `to_audit_dict()` for GDPR/regional governance.
 - **`signed_at` / `to_audit_dict()`** — every executed `PromptResult` records when its proof was signed; `result.to_audit_dict()` returns the audit-relevant subset (`execution_id`, `audit_hash`, `audit_chain_id`, `tamper_check`, `policy_id`, `compliance_mode`, `data_residency`, `needs_approval`, `model`, `tokens_used`, `cost`, `signed_at`).
 - **`get_compliance_report()`** — one-shot compliance snapshot: mode, `data_residency`, `chain_integrity`, signed/total entries, budget ledger (`to_dict()`), pending approvals, rule count, and the review action in effect.
-- **`BudgetConfig`** — owns the in-process ledger (`daily_spent`, `request_count`) with `check_budget()`, `add_cost()`, `get_alert_level()` and `to_dict()`; budget enforcement remains in-process only (see Roadmap).
+- **`BudgetConfig`** — owns the cost ledger (`daily_spent`, `request_count`) with `check_budget()`, `add_cost()`, `get_alert_level()` and `to_dict()`; in-process by default, or shared across processes via `backend=` (`RedisBudgetLedger`)
 - All compliance errors (`BudgetExceededError`, `TamperDetectedError`, `HumanApprovalRequired`) share the `ComplianceError` base class.
 
 #### Policy-driven surface: `CompliantPromptClient`, `PolicyConfig`, `SignedExecutionResult`
@@ -755,6 +758,17 @@ assert result.receipt             # == audit_hash
 - **`PolicyConfig`** — standalone per-tenant policy: `tenant_id`, `mode` (`ComplianceMode`), `sensitivity` (`SensitivityLevel`), `budget` (`BudgetConfig`), `human_review_patterns`, `human_review_action`, `policy_rules`/`policy_path`, `signing_key` (defaults to a deterministic per-tenant key via `get_signing_key()`), `data_residency`. Loads/saves YAML & JSON; `to_compliance_config()` bridges it to the engine-level `ComplianceConfig`.
 - **`CompliantPromptClient`** — `PromptClient` subclass that drives behaviour from a `PolicyConfig` and returns `SignedExecutionResult` from `prompt()`/`replay()`. Aliases: `.audit` (= `.audit_log`), `.budget` (active ledger), `.mode`. Accepts all `PromptClient` constructor args, including `enable_pii_scan=True`. All existing `PromptClient` methods (`approve`, `reject`, `verify_execution`, `export_audit_trail`, `get_compliance_report`, `replay`) work unchanged.
 - **`SignedExecutionResult`** — `PromptResult` subclass typed for audit proof, with `verified` (`tamper_check is True`) and `receipt` (= `audit_hash`) conveniences.
+
+### Receipts (`brompt.receipt`)
+
+Every signed execution can be exported as a standalone `.receipt` file for external audit. A receipt is self-contained and tamper-evident: it embeds the audit-proof fields, the exact response text and its SHA-256 hash, and (when the audit log is signed) an HMAC-SHA256 or Ed25519 signature over the canonical payload — an Ed25519 receipt embeds the public key so a third party can verify it standalone.
+
+```python
+client.write_receipt(result, "logs/exec-123.receipt")   # signed by the bound audit log
+report = client.verify_receipt("logs/exec-123.receipt") # {"ok": True, "reason": "ok"}
+```
+
+CLI: `brompt receipt <audit-id> -o exec.receipt` exports from the trail; `brompt receipt --verify -o exec.receipt` validates. Audit entries also store the exact response text (`response` payload field) so receipts can be re-exported from the log.
 
 ```yaml
 # policy.yaml
@@ -988,10 +1002,10 @@ matrix:
 
 ### Roadmap
 
-- ⚠️ **Signed execution receipt serialization** — produce standalone `.receipt` files for external audit
-- ⚠️ **Deterministic replay CLI** — `brompt replay <audit-id> --model=X` with diff output (engine `replay()` exists; CLI command pending)
-- ⚠️ **Cross-process budget ledger** — current `BudgetConfig` limits are enforced in-process only; a shared/atomic budget store is needed for multi-instance deployments
-- ⚠️ **Prober indirect-injection coverage** — extend `ProberAgent` test cases beyond direct prompts to tool/RAG-mediated (indirect) prompt injection
+- ✅ **Signed execution receipt serialization** — `PromptClient.write_receipt(result, path)` / `verify_receipt(path)` and `brompt receipt <audit-id> -o x.receipt` produce standalone `.receipt` files (JSON) embedding the audit proof, the response text + SHA-256 hash, and an HMAC/Ed25519 signature over the canonical payload (`brompt.receipt`)
+- ✅ **Deterministic replay CLI** — `brompt replay <audit-id> --model=X` re-runs a recorded execution on another model and prints a unified diff (exit 0 identical / 1 drifted); original and replayed output is stored in the audit trail
+- ✅ **Cross-process budget ledger** — `BudgetConfig(backend=RedisBudgetLedger.from_url(url))` shares daily-spend/request-count accounting atomically across processes (date-scoped Redis keys, no Lua); wire via `WidgetConfig(budget_redis_url=...)` or `BROMPT_BUDGET_REDIS_URL`
+- ✅ **Prober indirect-injection coverage** — `ProberAgent.DEFAULT_TEST_CASES` now includes tool/RAG/structured-data mediated (indirect, OWASP LLM02) injection cases, all verified against `SecurityEngine.sanitize`
 
 ---
 

@@ -142,6 +142,32 @@ async def test_prober_blocked_against_real_engine():
     assert prober.vulnerabilities_found == []
 
 
+async def test_prober_blocks_indirect_tool_and_rag_injection():
+    """Tool/RAG-mediated (indirect) injection must be blocked by the real
+    engine — the wrapper framing must not mask the payload."""
+    prober = ProberAgent()
+    await prober.analyze(SecurityEngine.sanitize)
+    indirect = [
+        c for c in prober.test_cases
+        if c.startswith(("Tool", "RAG", "Retrieved", "external_data", "tool_result"))
+    ]
+    assert indirect, "indirect test cases must be registered"
+    assert prober.vulnerabilities_found == []
+
+
+async def test_prober_indirect_cases_are_covered_by_real_engine():
+    from brompt.security import SecurityEngine, SecurityViolationError
+
+    prober = ProberAgent()
+    indirect = [
+        c for c in prober.test_cases
+        if c.startswith(("Tool", "RAG", "Retrieved", "external_data", "tool_result"))
+    ]
+    for case in indirect:
+        with pytest.raises(SecurityViolationError):
+            SecurityEngine.sanitize(case)
+
+
 async def test_scribe_writes_to_real_audit_log(tmp_path):
     log = AuditLog(str(tmp_path / "audit.log"))
     scribe = ScribeAgent(audit_log=log)

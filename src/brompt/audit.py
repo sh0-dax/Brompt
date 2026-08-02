@@ -234,11 +234,14 @@ class AuditLog:
         latency_ms: float | None = None,
         tokens_used: int | None = None,
         messages: list[dict[str, str]] | None = None,
+        response: str | None = None,
     ) -> dict[str, Any]:
         """Appends one tamper-evident record. No update/delete by design.
 
         *messages* - the exact message list sent to the LLM, stored so that
         :meth:`replay` can re-run the same prompt on a different model.
+        *response* - the exact output text, stored so that standalone
+        receipts (``brompt.receipt``) can be re-exported from the trail.
         """
         with self._lock, self._cross_process_lock() as handle:
             prev_hash = self._last_hash(handle)
@@ -253,6 +256,8 @@ class AuditLog:
                 "prev_hash": prev_hash,
                 "messages": messages,
             }
+            if response is not None:
+                payload["response"] = response
             entry_hash = self._hash_entry(prev_hash, payload)
             record: dict[str, Any] = {**payload, "entry_hash": entry_hash}
             if self._hmac_key is not None:

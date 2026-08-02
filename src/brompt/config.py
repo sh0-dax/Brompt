@@ -5,7 +5,33 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Protocol, runtime_checkable
+
+
+@runtime_checkable
+class BudgetBackend(Protocol):
+    """Shared accounting backend for :class:`BudgetConfig`.
+
+    Implemented by :class:`~brompt.budget.RedisBudgetLedger` so that daily
+    spend and request counts are consistent across processes/replicas
+    instead of being per-client in-memory counters.
+    """
+
+    def spent(self) -> float:
+        """Current total daily spend (USD)."""
+        ...
+
+    def count(self) -> int:
+        """Current number of charged requests today."""
+        ...
+
+    def add_cost(self, cost: float) -> None:
+        """Atomically accumulate *cost* and bump the request counter."""
+        ...
+
+    def close(self) -> None:
+        """Release any held connections/resources."""
+        ...
 
 
 class ProviderType(str, Enum):
@@ -109,9 +135,12 @@ class CacheConfig:
 class BudgetConfig:
     """Cost budget enforcement tied to the audit trail.
 
-    All accounting is in-process (per client instance); it does not span
-    multiple replicas. ``max_daily_cost``/``max_per_request`` are USD and
-    compared against ``pricing.calculate_cost`` estimates.
+    Accounting is in-process by default (per client instance).  Set
+    ``backend`` to a shared :class:`BudgetBackend` (e.g.
+    :class:`~brompt.budget.RedisBudgetLedger`) to make ``daily_spent`` /
+    ``request_count`` consistent across processes and replicas.
+    ``max_daily_cost``/``max_per_request`` are USD and compared against
+    ``pricing.calculate_cost`` estimates.
     """
 
     max_daily_cost: float = 100.0
@@ -121,6 +150,7 @@ class BudgetConfig:
 
     daily_spent: float = 0.0
     request_count: int = 0
+    backend: Optional[BudgetBackend] = None
 
     def __post_init__(self):
         if self.max_daily_cost <= 0:
@@ -130,9 +160,19 @@ class BudgetConfig:
         if not 0 < self.alert_threshold <= 1:
             raise ValueError("alert_threshold must be in (0, 1]")
 
+    def _spent(self) -> float:
+        if self.backend is not None:
+            return self.backend.spent()
+        return self.daily_spent
+
+    def _count(self) -> int:
+        if self.backend is not None:
+            return self.backend.count()
+        return self.request_count
+
     def check_budget(self, estimated_cost: float = 0.0) -> bool:
         """``False`` when the request would exceed the daily or per-request cap."""
-        if self.daily_spent + estimated_cost > self.max_daily_cost:
+        if self._spent() + estimated_cost > self.max_daily_cost:
             return False
         if estimated_cost > self.max_per_request:
             return False
@@ -140,6 +180,9 @@ class BudgetConfig:
 
     def add_cost(self, cost: float) -> None:
         """Accumulate spend and bump the request counter."""
+        if self.backend is not None:
+            self.backend.add_cost(cost)
+            return
         self.daily_spent += cost
         self.request_count += 1
 
@@ -147,7 +190,7 @@ class BudgetConfig:
         """``"normal"`` / ``"warning"`` / ``"exceeded"`` based on daily spend."""
         if self.max_daily_cost <= 0:
             return "exceeded"
-        ratio = self.daily_spent / self.max_daily_cost
+        ratio = self._spent() / self.max_daily_cost
         if ratio >= 1.0:
             return "exceeded"
         if ratio >= self.alert_threshold:
@@ -160,9 +203,10 @@ class BudgetConfig:
             "max_daily_cost": self.max_daily_cost,
             "max_per_request": self.max_per_request,
             "alert_threshold": self.alert_threshold,
-            "daily_spent": round(self.daily_spent, 6),
-            "request_count": self.request_count,
+            "daily_spent": round(self._spent(), 6),
+            "request_count": self._count(),
             "alert_level": self.get_alert_level(),
+            "backend": self.backend.__class__.__name__ if self.backend is not None else "in-process",
         }
 
 
@@ -376,6 +420,7 @@ class WidgetConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     compliance: ComplianceConfig = field(default_factory=ComplianceConfig)
+    budget_redis_url: Optional[str] = None
     debug: bool = False
     default_template: str = "default"
 
@@ -465,6 +510,7 @@ class WidgetConfig:
                 format=lc.get("format", "%(asctime)s - %(name)s - %(levelname)s - %(message)s"),
             )
 
+        comp: dict = {}
         if "compliance" in data:
             comp = data["compliance"]
             budget = comp.get("budget", {})
@@ -485,8 +531,10 @@ class WidgetConfig:
             )
 
         cfg.debug = data.get("debug", False)
+        budget_redis = data.get("budget_redis_url") or comp.get("budget", {}).get("redis_url")
+        if budget_redis:
+            cfg.budget_redis_url = budget_redis
         return cfg
-
     @classmethod
     def from_env(cls) -> "WidgetConfig":
         return cls(
@@ -505,6 +553,7 @@ class WidgetConfig:
             routing=RoutingConfig(
                 enabled=os.getenv("BROMPT_ROUTING_ENABLED", "false").lower() == "true",
             ),
+            budget_redis_url=os.getenv("BROMPT_BUDGET_REDIS_URL") or None,
             debug=os.getenv("BROMPT_DEBUG", "false").lower() == "true",
         )
 

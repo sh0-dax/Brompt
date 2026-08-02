@@ -1,5 +1,6 @@
 """Brompt CLI — Typer-based command-line interface with Rich formatting."""
 
+import difflib
 import json
 from pathlib import Path
 from typing import Optional
@@ -15,6 +16,8 @@ from brompt.core.engine import BromptEngine
 from brompt.core.template_engine import template_registry
 from brompt.hooks import LoggingHook, TimingHook, hooks_manager
 from brompt.observability import metrics
+from brompt.providers_core import build_provider_from_env
+from brompt.receipt import Receipt, load_receipt, save_receipt, verify_receipt
 
 app = typer.Typer(
     name="brompt",
@@ -164,6 +167,95 @@ def audit(
 
 
 @app.command()
+def replay(
+    audit_id: str = typer.Argument(..., help="Audit entry hash or execution id to re-run."),
+    config: str = typer.Option("agent.brompt.yaml", "--config", "-c", help="Path to config file."),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Provider model override for the re-run."),
+    no_diff: bool = typer.Option(False, "--no-diff", help="Print the replayed output without a diff."),
+):
+    """Deterministically re-run a recorded execution and diff the output."""
+    engine = _load_engine(config, allow_missing=True)
+    entry_hash = _resolve_audit_id(engine, audit_id)
+    if entry_hash is None:
+        console.print(f"[red]Audit entry not found: {audit_id}[/red]")
+        raise typer.Exit(2)
+    provider = build_provider_from_env(model=model) if model else engine.provider
+    result = engine.replay(entry_hash, provider)
+    if "error" in result:
+        console.print(f"[red]{result['error']}[/red]")
+        raise typer.Exit(2)
+    original = result["original"]
+    replayed = result["replayed"]
+    original_text = original.get("response") or ""
+    if not original_text:
+        original_text = "".join(
+            m.get("content", "") for m in (original.get("messages") or [])
+        )
+    new_text = getattr(replayed, "text", "")
+    replayed_model = getattr(replayed, "model", "replay")
+    console.print(f"[bold]Replay of {entry_hash}[/bold] (original -> {replayed_model})")
+    if no_diff:
+        console.print(new_text)
+        return
+    diff = list(difflib.unified_diff(
+        original_text.splitlines(keepends=True),
+        new_text.splitlines(keepends=True),
+        fromfile="original",
+        tofile=f"replayed ({replayed_model})",
+        lineterm="",
+    ))
+    if not diff:
+        console.print("[green]Outputs are identical.[/green]")
+        return
+    for line in diff:
+        if line.startswith("+") and not line.startswith("+++"):
+            color = "green"
+        elif line.startswith("-") and not line.startswith("---"):
+            color = "red"
+        elif line.startswith("@"):
+            color = "cyan"
+        else:
+            color = "dim"
+        console.print(f"[{color}]{line.rstrip()}[/{color}]")
+    raise typer.Exit(1)
+
+
+@app.command()
+def receipt(
+    audit_id: Optional[str] = typer.Argument(None, help="Audit entry hash or execution id to attest."),
+    config: str = typer.Option("agent.brompt.yaml", "--config", "-c", help="Path to config file."),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output .receipt file path."),
+    verify: bool = typer.Option(False, "--verify", help="Verify a .receipt file instead of creating one."),
+):
+    """Export or verify a standalone signed execution receipt."""
+    if verify:
+        if not output:
+            console.print("[red]--verify requires --output <file>.[/red]")
+            raise typer.Exit(2)
+        engine = _load_engine(config, allow_missing=True)
+        report = verify_receipt(load_receipt(output), engine.audit)
+        color = "green" if report["ok"] else "red"
+        console.print(
+            f"[{color}]Receipt {'VALID' if report['ok'] else 'INVALID'}: "
+            f"{report['reason']}[/{color}]"
+        )
+        raise typer.Exit(0 if report["ok"] else 1)
+    if not audit_id:
+        console.print("[red]An audit id (entry hash or execution id) is required.[/red]")
+        raise typer.Exit(2)
+    engine = _load_engine(config, allow_missing=True)
+    entry_hash = _resolve_audit_id(engine, audit_id)
+    if entry_hash is None:
+        console.print(f"[red]Audit entry not found: {audit_id}[/red]")
+        raise typer.Exit(2)
+    entry = engine.audit.find_entry(entry_hash)
+    built = Receipt.from_audit_entry(entry, engine.audit)
+    out = output or f"{entry_hash}.receipt"
+    save_receipt(built, out)
+    console.print(f"[green]Wrote {out} (audit_hash={entry_hash})[/green]")
+
+
+@app.command()
 def status(
     config: str = typer.Option("agent.brompt.yaml", "--config", "-c", help="Path to config file."),
 ):
@@ -251,16 +343,26 @@ def clear(
     console.print("[green]Memory cleared.[/green]")
 
 
-def _load_engine(config_path: str) -> BromptEngine:
+def _load_engine(config_path: str, allow_missing: bool = False) -> BromptEngine:
     path = _find_config(config_path)
     try:
-        return BromptEngine(path)
+        return BromptEngine(path, allow_missing_manifest=allow_missing)
     except FileNotFoundError as exc:
         console.print(f"[red]Config Error: {exc}[/red]")
         raise typer.Exit(1)
     except Exception as exc:
         console.print(f"[red]Engine Error: {exc}[/red]")
         raise typer.Exit(1)
+
+
+def _resolve_audit_id(engine: BromptEngine, audit_id: str) -> Optional[str]:
+    """Resolve an entry hash or execution id to a canonical entry hash."""
+    if engine.audit.find_entry(audit_id):
+        return audit_id
+    entry = engine.audit.find_by_state(audit_id)
+    if entry:
+        return entry.get("entry_hash")
+    return None
 
 
 def _find_config(config_path: str) -> str:

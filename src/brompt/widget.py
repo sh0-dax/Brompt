@@ -18,6 +18,13 @@ from .optimizer import TokenOptimizer
 from .policy import PolicyEngine, PolicyRule, PolicyViolationError
 from .pricing import _normalize_provider, estimate_cost
 from .providers import LLMProvider, ProviderFactory
+from .receipt import (
+    Receipt,
+    build_receipt,
+    load_receipt,
+    save_receipt,
+    verify_receipt,
+)
 from .router import ModelRouter
 from .security import SecurityEngine, SecurityViolationError
 from .session import Session, SessionManager
@@ -444,6 +451,19 @@ class PromptClient:
             self._policy = PolicyEngine(rules=[PolicyRule.from_dict(r) for r in rules])
 
         self._budget = self._compliance.budget if self._compliance.enabled else None
+        self._budget_backend = None
+        budget_url = self.config.budget_redis_url or os.getenv("BROMPT_BUDGET_REDIS_URL")
+        if budget_url and self._budget is not None:
+            from .budget import RedisBudgetLedger
+
+            try:
+                self._budget_backend = RedisBudgetLedger.from_url(budget_url)
+                self._budget.backend = self._budget_backend
+            except ImportError:
+                logger.warning(
+                    "budget_redis_url is set but the 'redis' package is not installed; "
+                    "falling back to the in-process budget ledger"
+                )
         self._pending_approvals: dict[str, dict] = {}
         self._air_gapped = self._compliance.enabled and self._compliance.mode == "air_gapped"
 
@@ -683,6 +703,7 @@ class PromptClient:
                 "execute" if provider_result.is_success else "provider_error",
                 latency_ms, provider_result.tokens_used, generated_prompt, cost,
                 is_secure=provider_result.is_success,
+                response=provider_result.text,
             )
             if self._budget is not None and self._budget.enabled:
                 self._update_budget(cost, execution_id, generated_prompt)
@@ -925,7 +946,8 @@ class PromptClient:
             result.policy_id = caller_id
         result.data_residency = self._compliance.data_residency
         self._attach_proof(result, new_execution_id, "replay", latency_ms,
-                           provider_result.tokens_used, prompt_text, 0.0)
+                           provider_result.tokens_used, prompt_text, 0.0,
+                           response=provider_result.text)
         return result
 
     def verify_execution(self, result) -> bool:
@@ -934,6 +956,27 @@ class PromptClient:
         if self._audit is None or result is None or result.audit_hash is None:
             return False
         return self._audit.verify() and self._audit.verify_entry(result.audit_hash)
+
+    def write_receipt(self, result, path: str) -> None:
+        """Persist a standalone ``.receipt`` file attesting to *result*.
+
+        The receipt embeds the audit-proof fields, the response text and its
+        SHA-256 hash, and is signed over its canonical payload when the bound
+        audit log is HMAC/Ed25519 signed.  See :mod:`brompt.receipt`.
+        """
+        save_receipt(build_receipt(result, self._audit), path)
+
+    def verify_receipt(self, path: str) -> dict:
+        """Verify a ``.receipt`` file against the bound audit log.
+
+        Returns ``{"ok": bool, "reason": str}`` — see
+        :func:`brompt.receipt.verify_receipt`.
+        """
+        return verify_receipt(load_receipt(path), self._audit)
+
+    def load_receipt(self, path: str) -> Receipt:
+        """Load a ``.receipt`` file into a :class:`~brompt.receipt.Receipt`."""
+        return load_receipt(path)
 
     def export_audit_trail(self) -> list[dict]:
         """Export the full audit trail for external review."""
@@ -1051,7 +1094,8 @@ class PromptClient:
     def _record_event(self, event: str, state_id: str, is_secure: bool,
                       content: str, detail: Optional[str] = None,
                       latency_ms: Optional[float] = None,
-                      tokens_used: int = 0) -> Optional[str]:
+                      tokens_used: int = 0,
+                      response: Optional[str] = None) -> Optional[str]:
         """Record an audit entry and return its ``entry_hash`` (or ``None``)."""
         if self._audit is None:
             return None
@@ -1059,16 +1103,19 @@ class PromptClient:
             event, state_id, is_secure, detail=detail,
             latency_ms=latency_ms, tokens_used=tokens_used,
             messages=[{"role": "user", "content": content}],
+            response=response,
         )
         return record.get("entry_hash")
 
     def _attach_proof(self, result: PromptResult, execution_id: str, event: str,
                       latency_ms: float, tokens_used: int, content: str,
-                      cost: float, is_secure: bool = True) -> None:
+                      cost: float, is_secure: bool = True,
+                      response: Optional[str] = None) -> None:
         """Record the execution in the audit trail and stamp proof onto *result*."""
         entry_hash = self._record_event(
             event, execution_id, is_secure, content,
             latency_ms=latency_ms, tokens_used=tokens_used,
+            response=response,
         )
         if entry_hash is None:
             return
