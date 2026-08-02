@@ -409,10 +409,17 @@ class PromptClient:
         audit_log_path: Optional[str] = None,
         audit_secret_key: Optional[str] = None,
         compliance: Optional[ComplianceConfig] = None,
+        enable_pii_scan: bool = True,
     ):
         self.config = config or WidgetConfig()
         self._compliance = compliance or self.config.compliance
         self._audit: Optional[AuditLog] = None
+        # Output-side PII scan (credit cards, SSN, email, phone, system-prompt
+        # leaks) via WardenAgent/MedicAgent in agents.py. Independent of
+        # SecurityEngine.redact_with_metadata, which only covers secrets/keys.
+        self._pii_scan_enabled = enable_pii_scan
+        self._warden = None
+        self._medic = None
         self._audit_key = (
             audit_secret_key
             or self._compliance.signing_key
@@ -629,7 +636,7 @@ class PromptClient:
                 **generation_kwargs,
             }
             provider_result = await self._provider.generate(generated_prompt, **gen_params)
-            provider_result.text = self._sanitize_output(provider_result.text)
+            provider_result.text = await self._sanitize_output(provider_result.text)
             latency_ms = (time.time() - start_time) * 1000
             prompt_tokens = provider_result.prompt_tokens or len(generated_prompt) // 4
             completion_tokens = provider_result.completion_tokens or provider_result.tokens_used
@@ -746,7 +753,7 @@ class PromptClient:
         async for chunk in self._provider.stream(generated_prompt, **generation_kwargs):
             full_response.append(chunk)
             yield chunk
-        redacted_response = self._sanitize_output("".join(full_response))
+        redacted_response = await self._sanitize_output("".join(full_response))
         self._record_event("stream", execution_id, True, generated_prompt,
                            detail=redacted_response)
         if session_id:
@@ -894,7 +901,7 @@ class PromptClient:
 
         start_time = time.time()
         provider_result = await provider.generate(prompt_text, system=system_prompt)
-        provider_result.text = self._sanitize_output(provider_result.text)
+        provider_result.text = await self._sanitize_output(provider_result.text)
         latency_ms = (time.time() - start_time) * 1000
         new_execution_id = uuid.uuid4().hex[:16]
         result = self._make_result(
@@ -992,12 +999,19 @@ class PromptClient:
 
     # -- compliance helpers ------------------------------------------------
 
-    def _sanitize_output(self, text: str) -> str:
-        """Redact secrets from provider output and record what was hidden.
+    async def _sanitize_output(self, text: str) -> str:
+        """Redact secrets and PII from provider output and record what was hidden.
 
-        Records an ``output_redacted`` audit event with the type of each
-        secret-like pattern replaced, keeping a forensic trail of what was
-        removed before the response reached the caller.
+        Two independent layers, each recorded separately so the audit trail
+        shows exactly why a redaction happened:
+        1. SecurityEngine.redact_with_metadata — secrets/API keys/tokens.
+        2. WardenAgent + MedicAgent (agents.py) — PII (credit cards, SSN,
+           email, phone) and system-prompt leaks, which SecurityEngine's
+           output patterns intentionally do not cover.
+
+        Async because the PII layer (step 2) is async; all call sites are
+        already inside ``prompt()``/``prompt_stream()``/``replay()``, which
+        are async, so this is a plain ``await``, not a new event loop.
         """
         redacted, redactions = SecurityEngine.redact_with_metadata(text)
         if redactions and self._audit is not None:
@@ -1005,6 +1019,24 @@ class PromptClient:
                 "output_redacted", uuid.uuid4().hex[:16], True,
                 detail=", ".join(redactions),
             )
+
+        if self._pii_scan_enabled:
+            if self._warden is None:
+                from .agents import WardenAgent
+                self._warden = WardenAgent()
+            if self._medic is None:
+                from .agents import MedicAgent
+                self._medic = MedicAgent()
+
+            event = await self._warden.analyze(redacted)
+            if event.metadata.get("concerns"):
+                if self._audit is not None:
+                    self._audit.record(
+                        "pii_redacted", uuid.uuid4().hex[:16], True,
+                        detail=", ".join(event.metadata["concerns"]),
+                    )
+                redacted = await self._medic.act(event, redacted)
+
         return redacted
 
     def _record_event(self, event: str, state_id: str, is_secure: bool,

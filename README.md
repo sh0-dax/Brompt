@@ -180,12 +180,14 @@ Brompt implements a multi-layer defense-in-depth security pipeline, not a single
 
 ### Layer 2: Pattern Blocklist
 
-15 regex patterns covering 4 languages (English, Arabic, Italian, German) for:
+19 regex patterns covering 4 languages (English, Arabic, Italian, German) for:
 - Direct instruction overrides
 - System prompt leakage attempts
 - Guardrail bypass attempts
 - Jailbreak persona switches
 - Role-play bypasses
+
+German detection matches native verb forms (`ignoriere/ignorieren … Anweisungen`) rather than anglicized variants, and the blocklist also covers mixed-language and fullwidth/leetspeak obfuscations that survive canonicalization.
 ### Layer 3: Semantic Classifier (`classifier.py`)
 
 An optional LLM-based second line of defense that reasons about intent, not surface text:
@@ -203,13 +205,48 @@ Redacts secret-like content before it reaches the caller:
 - Private key blocks
 - GitHub / Slack tokens
 
-### Layer 5: Audit-Grade Observability
+Personal data (credit cards, SSN, email, phone) and system-prompt leakage are
+out of scope here by design — they are handled by the Security Agents layer
+below.
+
+### Layer 5: Security Agents (`agents.py`) — immune system
+
+A coordination layer of six security agents that act as an "antivirus" for
+the LLM pipeline. They are *facades over the real capabilities* in
+`SecurityEngine` and `AuditLog` — no security logic is duplicated — so the
+pattern/signature source of truth stays in one place.
+
+| Agent | Role | Delegates to |
+| --- | --- | --- |
+| `SentryAgent` | Input gatekeeper | `SecurityEngine.sanitize_with_metadata` + behavioural checks (repetition, oversize) |
+| `WardenAgent` | Output PII scanner (credit cards, SSN, email, phone, system-prompt leaks) | `SecurityEngine.redact_with_metadata` for secrets |
+| `MedicAgent` | Targeted redaction of PII concerns (`[REDACTED-CC]`, `[REDACTED-EMAIL]`, …) | Warden's structural concerns |
+| `ScribeAgent` | Thin audit writer | Real `AuditLog` (hash chain + HMAC) — no parallel store |
+| `ProberAgent` | Red-team: runs real test cases against `SecurityEngine.sanitize`, records only actual bypasses | `SecurityEngine.sanitize` |
+| `ClonerAgent` | In-process agent bundles per tenant/context, sharing one `AuditLog` | — (explicitly not distributed) |
+
+- `Marshal` coordinates Sentry → Warden → Medic → Scribe in one entry point.
+- **Wired into every path**: `PromptClient._sanitize_output` (widget) and
+  `BromptEngine._pii_heal_async` (API/CLI via `core/engine.py`) both run
+  Warden + Medic, recording a `pii_redacted` audit event with forensic detail.
+- Opt out per-instance with `enable_pii_scan=False`; the secrets layer
+  (`SecurityEngine.redact_with_metadata`) always runs.
+- The Prober ships 16 OWASP LLM Top-10-inspired cases (English, Arabic,
+  Italian, German, leetspeak, zero-width/fullwidth Unicode, base64); the
+  suite is expected to find **zero** bypasses against the real engine.
+- Thread-safe: every `memory`/`threat_history` mutation is guarded by a
+  `threading.Lock`; memory is bounded (last 500 events).
+- Backward-compatible: old names (`GuardianAgent`, `SentinelAgent`,
+  `InjectorAgent`, `HealerAgent`, `AuditorAgent`, `PropagatorAgent`,
+  `SecurityOrchestrator`) remain as aliases.
+
+### Layer 6: Audit-Grade Observability
 
 - SHA-256 hash-chained, append-only audit log
 - HMAC-SHA256 integrity with opt-in **Ed25519 non-repudiation** (`BROMPT_AUDIT_SIGNING_KEY`)
 - Cross-process safe via `portalocker` file locking (atomic `O_APPEND` fallback)
 - Tamper-evident via `AuditLog.verify()` and detailed `AuditLog.verify_report()`
-- Every security event recorded with immutable chain; output redactions and replay executions emit `output_redacted` / `replay_executed` events with forensic detail
+- Every security event recorded with immutable chain; output redactions, PII redactions, and replay executions emit `output_redacted` / `pii_redacted` / `replay_executed` events with forensic detail
 
 **Note:** No blocklist is a guarantee. The classifier layer significantly raises the bar, but defense-in-depth design (least-privilege tools, output redaction, audit trails) is essential.
 
@@ -292,6 +329,7 @@ Brompt/
 │       ├── providers_core.py         # Core provider integrations (sync)
 │       ├── schema.py                 # Data Models & System Schemas
 │       ├── security.py               # Ingress filtering + output redaction
+│       ├── agents.py                 # Security-agent coordination layer (immune system)
 │       ├── memory.py                 # Bounded turn history + session state (Thread-Safe)
 │       ├── ratelimit.py              # Per-caller sliding-window rate limiter
 │       ├── audit.py                  # Hash-chained, tamper-evident audit log

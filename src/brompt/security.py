@@ -46,14 +46,18 @@ class SecurityEngine:
         (r"\breveal\s+internal\s+keys\b", "Credential Leakage Attempt"),
         (r"you\s+are\s+now\s+in\s+(developer|dan|god)\s+mode", "Jailbreak: Persona Switch"),
         (r"\bdisregard\s+(all\s+|any\s+)?(prior|previous)\s+(instructions|directives|guidelines)\b", "Direct Injection: Instruction Override (variant)"),  # noqa: E501
-        (r"\boverride\s+(your\s+)?(core|safety|security|ethical)\s+(protocols?|guidelines?|instructions)\b", "Direct Injection: Safety Override"),  # noqa: E501
+        (r"\boverride\s+(your\s+)?((core|primary)\s+)?(safety|security|ethical)\s+(protocols?|guidelines?|instructions)\b", "Direct Injection: Safety Override"),  # noqa: E501
         (r"\boutput\s+(your\s+)?(system\s+)?(prompt|instructions)\s+(verbatim|text|as.is|exactly)\b", "System Leakage Attempt (variant)"),  # noqa: E501
         (r"\byou\s+(are|will)\s+now\s+(act\s+as|simulate|pretend\s+to\s+be)\b", "Jailbreak: Role-Play Bypass"),
+        (r"\bact\s+as\s+dan\b", "Jailbreak: DAN Persona"),
+        (r"\bsimulate\s+an\s+unfiltered\s+assistant\b", "Jailbreak: Unfiltered Simulation"),
         (r"\bremove\s+(all\s+)?(restrictions?|limitations?|filtering|content.policy)\b", "Jailbreak: Restriction Removal"),  # noqa: E501
         (r"تجاهل\s+(جميع\s+)?التعليمات\s+السابقة", "Arabic: Instruction Override Attempt"),
         (r"أنت\s+(الآن\s+)?في\s+وضع\s+المطور", "Arabic: Developer Mode Bypass"),
         (r"ignora\s+(tutte\s+)?le\s+istruzioni\s+precedenti", "Italian: Instruction Override Attempt"),
-        (r"ignore\s+(alle\s+)?(bisherigen\s+)?anweisungen", "German: Instruction Override Attempt"),
+        (r"ignorier\w*\s+(alle\s+)?(bisherigen\s+)?anweisungen", "German: Instruction Override Attempt"),
+        (r"\bignore\s+(alle\s+)?(bisherigen\s+)?anweisungen\b", "German: Instruction Override Attempt (mixed)"),
+        (r"gib\s+(deinen|mir)\s+system[-\s]?prompt\s+preis", "German: System Leakage Attempt"),
     ]
 
     OUTPUT_LEAK_PATTERNS: ClassVar[list[tuple[str, str]]] = [

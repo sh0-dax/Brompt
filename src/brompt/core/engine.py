@@ -4,10 +4,11 @@ import asyncio
 import hashlib
 import logging
 import os
+import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable
 
 import yaml
 
@@ -26,6 +27,30 @@ logger = logging.getLogger("brompt.core.engine")
 _UNSET = object()
 
 
+def _run_coro_sync(awaitable: Awaitable[str]) -> str:
+    """Run a coroutine from synchronous code, tolerating an already-running
+    event loop (spawns a daemon worker thread with its own loop)."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(awaitable)
+    result: dict[str, str] = {}
+    error: list[BaseException] = []
+
+    def _runner() -> None:
+        try:
+            result["value"] = asyncio.run(awaitable)
+        except BaseException as exc:
+            error.append(exc)
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join()
+    if error:
+        raise error[0]
+    return result["value"]
+
+
 class BromptEngine:
     """Core runtime engine enforcing deterministic execution and security guardrails."""
 
@@ -40,6 +65,7 @@ class BromptEngine:
         rate_limiter: RateLimiterBackend | None = None,
         injection_classifier: InjectionClassifier | None = None,
         circuit_breaker: CircuitBreaker | None = None,
+        enable_pii_scan: bool = True,
     ):
         manifest_file = Path(config_path)
         if not manifest_file.exists():
@@ -85,6 +111,13 @@ class BromptEngine:
         self._last_tokens_used = 0
         self._last_prompt_tokens = 0
         self._last_completion_tokens = 0
+
+        # Output-side PII scan (credit cards, SSN, email, phone, system-prompt
+        # leaks) via WardenAgent/MedicAgent in agents.py — independent of
+        # SecurityEngine.redact_with_metadata, which only covers secrets/keys.
+        self._pii_scan_enabled = enable_pii_scan
+        self._warden = None
+        self._medic = None
 
     # -- shared pipeline steps -------------------------------------------------
 
@@ -162,6 +195,46 @@ class BromptEngine:
                                audit_chain_id=audit_record.get("prev_hash"),
                                tamper_check=self.audit.verify())
 
+    # -- output sanitization ---------------------------------------------------
+
+    async def _pii_heal_async(self, reply: str) -> str:
+        """Redact secrets and PII from a provider reply, recording both events.
+
+        Layer 1 (always on): SecurityEngine.redact_with_metadata — secrets/API
+        keys/tokens, logged as ``output_redacted``.
+        Layer 2 (enable_pii_scan): WardenAgent + MedicAgent — PII (credit
+        cards, SSN, email, phone) and system-prompt leaks, logged as
+        ``pii_redacted``. Mirrors PromptClient._sanitize_output so the
+        API/CLI path gets the same protection as the widget path.
+        """
+        redacted, redactions = SecurityEngine.redact_with_metadata(reply)
+        if redactions:
+            self.audit.record(
+                "output_redacted", self.state_id, True,
+                detail=", ".join(redactions),
+                latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
+            )
+
+        if not self._pii_scan_enabled:
+            return redacted
+
+        if self._warden is None:
+            from ..agents import WardenAgent
+            self._warden = WardenAgent()
+        if self._medic is None:
+            from ..agents import MedicAgent
+            self._medic = MedicAgent()
+
+        event = await self._warden.analyze(redacted)
+        if event.metadata.get("concerns"):
+            self.audit.record(
+                "pii_redacted", self.state_id, True,
+                detail=", ".join(event.metadata["concerns"]),
+                latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
+            )
+            redacted = await self._medic.act(event, redacted)
+        return redacted
+
     # -- synchronous path -------------------------------------------------------
 
     def execute(
@@ -211,13 +284,7 @@ class BromptEngine:
                 else:
                     reply = self.provider.generate(messages_to_send, system=system_prompt)
                 self._last_latency_ms = (time.time() - t0) * 1000
-                reply, redactions = SecurityEngine.redact_with_metadata(reply)
-                if redactions:
-                    self.audit.record(
-                        "output_redacted", self.state_id, True,
-                        detail=", ".join(redactions),
-                        latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
-                    )
+                reply = _run_coro_sync(self._pii_heal_async(reply))
                 self.memory.add_turn("assistant", reply)
                 output_payload["llm_response"] = reply
                 output_payload["provider_used"] = True
@@ -304,13 +371,7 @@ class BromptEngine:
             )
 
         if reply is not None:
-            reply, redactions = SecurityEngine.redact_with_metadata(reply)
-            if redactions:
-                self.audit.record(
-                    "output_redacted", self.state_id, True,
-                    detail=", ".join(redactions),
-                    latency_ms=self._last_latency_ms, tokens_used=self._last_tokens_used,
-                )
+            reply = await self._pii_heal_async(reply)
             self.memory.add_turn("assistant", reply)
             output_payload["llm_response"] = reply
             output_payload["provider_used"] = True
